@@ -1,0 +1,39 @@
+[features]
+codex_hooks = true
+
+[hooks]
+SessionStart = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]
+
+UserPromptSubmit = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]
+
+PreToolUse = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]
+
+PostToolUse = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]
+
+PermissionRequest = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]
+
+Stop = [
+  { hooks = [
+    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+  ] }
+]

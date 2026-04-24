@@ -3,7 +3,7 @@
 ## 1. Cel projektu
 
 StandPulse ma pilnować, żebym nie siedział zbyt długo bez przerwy przy biurku. 
-System ma wykrywać ciągłą obecność w strefie biurka, liczyć czas, a po przekroczeniu limitu uruchamiać zewnętrzny sygnał świetlny.
+System ma wykrywać ciągłą obecność w strefie biurka, liczyć czas, a po przekroczeniu limitu pokazywać wyraźny komunikat na małym monitorze.
 
 Reset cyklu ma następować dopiero wtedy, gdy użytkownik rzeczywiście odejdzie od biurka na minimalny, skonfigurowany czas.
 
@@ -12,7 +12,7 @@ Reset cyklu ma następować dopiero wtedy, gdy użytkownik rzeczywiście odejdzi
 1. Logika działa na komputerze z Windows.
 2. Czujnik obecności jest obowiązkowy — bez niego projekt nie ma sensu.
 3. Nie tworzymy osobnego „mózgu” urządzenia, jeśli komputer może pełnić tę rolę.
-4. Sygnał ostrzegawczy powinien być fizyczny, a nie tylko ekranowy.
+4. Ostrzeżenie powinno być widoczne na osobnym małym monitorze, a nie tylko w głównym oknie aplikacji.
 5. Reset nie następuje po chwilowym poderwaniu się, tylko po realnej przerwie poza biurkiem.
 
 ## 3. Proponowana logika działania
@@ -22,11 +22,11 @@ Reset cyklu ma następować dopiero wtedy, gdy użytkownik rzeczywiście odejdzi
 - aplikacja liczy czas ciągłej obecności.
 
 ### Po przekroczeniu limitu
-- aplikacja uruchamia sygnał świetlny,
-- sygnał może mieć różne tryby, np.:
-  - zielony = OK,
-  - czerwony = przekroczony limit,
-  - czerwony migający = alarm aktywny.
+- aplikacja aktualizuje widok na małym monitorze,
+- widok może mieć różne tryby, np.:
+  - spokojny widok = OK,
+  - wyraźne ostrzeżenie = przekroczony limit,
+  - animowany / pulsujący ekran = alarm aktywny.
 
 ### Reset cyklu
 - aplikacja wykrywa brak obecności w strefie biurka,
@@ -115,7 +115,7 @@ Aplikacja na PC powinna:
 
 1. odczytywać stan obecności z czujnika,
 2. liczyć czas ciągłej obecności w strefie biurka,
-3. po przekroczeniu limitu aktywować sygnał świetlny,
+3. po przekroczeniu limitu aktualizować widok ostrzegawczy na małym monitorze,
 4. liczyć czas nieobecności po odejściu od biurka,
 5. resetować cykl dopiero po osiągnięciu minimalnego czasu przerwy.
 
@@ -124,7 +124,7 @@ Aplikacja na PC powinna:
 Minimalny model stanów:
 
 1. `PresentOk` — użytkownik obecny, limit jeszcze nieprzekroczony,
-2. `Warning` — użytkownik obecny, limit przekroczony, sygnał ostrzegawczy aktywny,
+2. `Warning` — użytkownik obecny, limit przekroczony, widok ostrzegawczy aktywny,
 3. `BreakCounting` — użytkownik opuścił strefę, trwa odliczanie minimalnej przerwy,
 4. `Reset` — przerwa zaliczona, licznik rozpoczyna nowy cykl.
 
@@ -135,59 +135,45 @@ Warto od razu przewidzieć konfigurowalne ustawienia:
 1. `WorkIntervalMinutes` — ile minut ciągłej obecności uruchamia alarm,
 2. `BreakResetSeconds` — ile sekund nieobecności resetuje cykl,
 3. `PresenceDebounceMs` — filtracja krótkich skoków sygnału,
-4. `LedModeWarning` — jaki sygnał świetlny odpowiada alarmowi,
-5. `LedModeOk` — jaki sygnał oznacza stan normalny.
+4. `DisplayModeWarning` — jaki widok odpowiada alarmowi,
+5. `DisplayModeOk` — jaki widok oznacza stan normalny.
 
-## 13. Sygnał świetlny — założenia
+## 13. Mały monitor — założenia
 
-Sygnał świetlny powinien być czymś gotowym lub prawie gotowym, a nie surową taśmą LED do samodzielnego montażu w obudowie.
+Aktualny kierunek sygnalizacji to mały monitor sterowany z aplikacji Windows.
+Monitor ma działać jako osobny, zawsze widoczny ekran statusu StandPulse.
 
 Wymagania wstępne:
 
-1. powinien dobrze wyglądać przy monitorze,
-2. najlepiej żeby dało się go po prostu postawić lub założyć na monitor,
-3. powinien umożliwiać sterowanie z komputera,
-4. idealnie przez lokalne API po Wi‑Fi.
+1. powinien dobrze wyglądać przy głównym stanowisku pracy,
+2. powinien dać się łatwo postawić obok monitora albo pod monitorem,
+3. powinien być sterowany bezpośrednio przez aplikację Windows,
+4. powinien pokazywać stan, czas obecności i ostrzeżenia,
+5. może pokazywać diagnostykę sensora, np. odległość oraz motion/static energy.
 
-Na tym etapie warto szukać raczej:
+Najprostszy model techniczny:
 
-1. light barów stawianych obok monitorów,
-2. monitor light barów zakładanych na górę monitora,
-3. małych lampek RGB z lokalnym sterowaniem.
+1. mały monitor działa jako dodatkowy ekran w Windows,
+2. aplikacja otwiera na nim dedykowane okno statusu,
+3. okno może działać w trybie pełnoekranowym albo kioskowym,
+4. aplikacja nie musi integrować się z zewnętrznym API urządzenia.
 
-## 14. Kandydaci do dalszego researchu dla części świetlnej
-
-Do dalszego sprawdzenia:
-
-1. **Govee Light Bars / Gaming Light Bars**
-   - plus: estetyczne, gotowe,
-   - plus: część urządzeń Govee wspiera LAN API,
-   - minus: trzeba sprawdzić wsparcie dla konkretnego modelu.
-
-2. **WiZ Light Bars / lampki WiZ**
-   - plus: znane lokalne sterowanie w ekosystemie WiZ,
-   - minus: trzeba sprawdzić, które konkretne modele najlepiej pasują wizualnie do monitora.
-
-3. **monitor light bary z podświetleniem ambient**
-   - plus: mogą ładnie nakładać się na monitor,
-   - minus: nie każdy model ma sensowne API.
-
-## 15. Najważniejsze pytania na start prac
+## 14. Najważniejsze pytania na start prac
 
 1. Czy zestaw XIAO + mmWave będzie od razu wygodnie widoczny w Windows jako port COM?
 2. Jakie dane dokładnie dostaniemy z sensora: obecność, mikroruch, odległość, status strefy?
-3. Jaki element świetlny będzie najlepiej wyglądał przy monitorze i jednocześnie dawał się sterować lokalnie?
+3. Jaki mały monitor najlepiej sprawdzi się jako osobny ekran statusu?
 4. Czy do pierwszej wersji wystarczy prosta interpretacja: „obecny / nieobecny”?
 
-## 16. Proponowany pierwszy etap prac
+## 15. Proponowany pierwszy etap prac
 
 1. Kupić i uruchomić zestaw XIAO + 24GHz mmWave for XIAO.
 2. Sprawdzić zachowanie w Windows po podłączeniu USB-C.
 3. Napisać prosty program testowy w C#, który tylko loguje zmiany stanu obecności.
 4. Zmierzyć, czy sensor sensownie rozpoznaje odejście od biurka i powrót.
-5. Dopiero potem dobrać finalny element świetlny.
+5. Dopiero potem dobrać finalny mały monitor i sposób wyświetlania statusu.
 
-## 17. Podsumowanie robocze
+## 16. Podsumowanie robocze
 
 Najbardziej sensowna koncepcja MVP StandPulse na dziś:
 
@@ -196,7 +182,90 @@ Najbardziej sensowna koncepcja MVP StandPulse na dziś:
 - **logika:** aplikacja Windows w C#,
 - **pomiar:** ciągła obecność w strefie biurka,
 - **reset:** dopiero po minimalnym czasie nieobecności,
-- **sygnalizacja:** zewnętrzny element świetlny sterowany z komputera.
+- **sygnalizacja:** osobny mały monitor sterowany przez aplikację Windows.
+
+## 17. Ustalenia robocze: sygnały z XIAO
+
+Nie należy traktować etykiety `StaticTarget` jako pewnej informacji, że użytkownik „siedzi statycznie”.
+Granice między `MovingTarget`, `StaticTarget` i `BothTargets` zależą od algorytmu radaru, odległości, czułości i realnych mikroruchów człowieka.
+Przykładowo osoba siedząca 50 cm od czujnika i poruszająca ręką albo twarzą może być klasyfikowana różnie w kolejnych próbkach.
+
+Dla StandPulse ważniejsze są:
+
+1. **odległość od czujnika** — sygnał pierwszej klasy, potrzebny do określenia strefy biurka,
+2. **ciągłość obecności w zadanym zakresie odległości**,
+3. **motion energy** i **static energy** — szczególnie przydatne do diagnostyki, kalibracji i wizualizacji,
+4. **status celu** (`NoTarget`, `MovingTarget`, `StaticTarget`, `BothTargets`) — pomocnicza etykieta, a nie główna semantyka aplikacji.
+
+Docelowo logika obecności powinna być bliższa temu modelowi:
+
+```text
+present = targetDetected && distanceCm >= DeskMinDistanceCm && distanceCm <= DeskMaxDistanceCm
+```
+
+gdzie:
+
+- `NoTarget` oznacza brak celu,
+- `MovingTarget`, `StaticTarget` i `BothTargets` oznaczają wykryty cel,
+- zakres odległości określa, czy wykryty cel znajduje się w strefie biurka.
+
+## 18. Tryb danych: podstawowy i diagnostyczny
+
+W trybie podstawowym XIAO powinno wysyłać do aplikacji Windows uproszczone próbki, np.:
+
+```json
+{"present":true,"targetStatus":"BothTargets","distanceCm":62,"motionEnergy":48,"staticEnergy":31}
+{"present":false,"targetStatus":"NoTarget","distanceCm":null,"motionEnergy":0,"staticEnergy":0}
+```
+
+W trybie diagnostycznym / inżynieryjnym warto rozważyć przesyłanie energii per bramka odległości:
+
+```json
+{
+  "present": true,
+  "distanceCm": 62,
+  "motionGates": [0, 3, 18, 44, 12, 2, 0, 0, 0],
+  "staticGates": [0, 0, 9, 35, 28, 4, 0, 0, 0]
+}
+```
+
+Taki strumień może służyć do wizualizacji, np. prostego histogramu energii w kolejnych zakresach odległości.
+To może być bardzo przydatne przy ustawianiu czujnika na biurku i dobieraniu progów, ale nie musi być wymagane w minimalnej logice MVP.
+
+## 19. Komunikacja z aplikacją Windows
+
+Aplikacja Windows powinna nasłuchiwać portu COM udostępnianego przez XIAO po USB.
+
+Docelowy przepływ danych:
+
+```text
+mmWave sensor -> UART -> XIAO -> USB serial / COM -> aplikacja Windows
+```
+
+XIAO pełni rolę adaptera:
+
+1. czyta surowe ramki z radaru po UART,
+2. parsuje je lokalnie,
+3. wysyła do komputera prostszy strumień danych,
+4. ukrywa przed aplikacją C# szczegóły binarnego protokołu radaru.
+
+Nie zakładamy, że XIAO wysyła dane tylko przy zmianie stanu.
+Lepszy model dla StandPulse to ciągły strumień próbek, np. co 100-250 ms.
+Dzięki temu aplikacja może:
+
+1. filtrować krótkie skoki sygnału,
+2. liczyć stabilną obecność i nieobecność,
+3. reagować na zmianę odległości,
+4. rysować diagnostykę energii w czasie,
+5. podejmować decyzje na podstawie kilku ostatnich próbek, a nie pojedynczego odczytu.
+
+Proponowany kierunek MVP:
+
+1. XIAO wysyła próbkę co około 200 ms.
+2. Aplikacja C# stale nasłuchuje portu COM.
+3. Dane z XIAO są przesyłane jako JSON Lines albo inny prosty format tekstowy.
+4. Decyzja `present` / `absent` jest filtrowana po stronie aplikacji.
+5. Tryb z `motionGates` i `staticGates` traktujemy jako opcjonalny tryb diagnostyczny.
 
 ---
 
@@ -204,10 +273,3 @@ Najbardziej sensowna koncepcja MVP StandPulse na dziś:
 
 - Seeed Studio — mmWave for XIAO:
   - https://wiki.seeedstudio.com/mmwave_for_xiao/
-
-- Do dalszego sprawdzenia pod kątem oświetlenia:
-  - Govee LAN API:
-    - https://app-h5.govee.com/user-manual/wlan-guide
-  - WiZ local / developer ecosystem:
-    - https://docs.pro.wizconnected.com/
-    - https://gitlab.com/wizlighting/wiz-local-control
