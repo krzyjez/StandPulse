@@ -1,4 +1,56 @@
 $ErrorActionPreference = 'Stop'
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8NoBom
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
+function Add-TextWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [Parameter(Mandatory = $true)]
+        [System.Text.Encoding]$Encoding
+    )
+
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            [System.IO.File]::AppendAllText($Path, $Text, $Encoding)
+            return
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -eq 8) {
+                throw
+            }
+            Start-Sleep -Milliseconds (25 * $attempt)
+        }
+    }
+}
+
+function Set-TextWithRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Text,
+        [Parameter(Mandatory = $true)]
+        [System.Text.Encoding]$Encoding
+    )
+
+    for ($attempt = 1; $attempt -le 8; $attempt++) {
+        try {
+            [System.IO.File]::WriteAllText($Path, $Text, $Encoding)
+            return
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -eq 8) {
+                throw
+            }
+            Start-Sleep -Milliseconds (25 * $attempt)
+        }
+    }
+}
 
 try {
     $inputJson = [Console]::In.ReadToEnd()
@@ -39,7 +91,7 @@ try {
 
     $jsonLine = $record | ConvertTo-Json -Depth 100 -Compress
     $prettyJson = $record | ConvertTo-Json -Depth 100
-    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $encoding = $utf8NoBom
     $datePrefix = Get-Date -Format 'yyyy-MM-dd'
 
     $allLog = Join-Path -Path $logRoot -ChildPath "$datePrefix-all.jsonl"
@@ -47,21 +99,21 @@ try {
     $lastEvent = Join-Path -Path $logRoot -ChildPath "last-$eventName.json"
     $lastAny = Join-Path -Path $logRoot -ChildPath 'last.json'
 
-    [System.IO.File]::AppendAllText($allLog, $jsonLine + [Environment]::NewLine, $encoding)
-    [System.IO.File]::AppendAllText($eventLog, $jsonLine + [Environment]::NewLine, $encoding)
-    [System.IO.File]::WriteAllText($lastEvent, $prettyJson + [Environment]::NewLine, $encoding)
-    [System.IO.File]::WriteAllText($lastAny, $prettyJson + [Environment]::NewLine, $encoding)
+    Add-TextWithRetry -Path $allLog -Text ($jsonLine + [Environment]::NewLine) -Encoding $encoding
+    Add-TextWithRetry -Path $eventLog -Text ($jsonLine + [Environment]::NewLine) -Encoding $encoding
+    Set-TextWithRetry -Path $lastEvent -Text ($prettyJson + [Environment]::NewLine) -Encoding $encoding
+    Set-TextWithRetry -Path $lastAny -Text ($prettyJson + [Environment]::NewLine) -Encoding $encoding
 }
 catch {
     $logRoot = Join-Path -Path $PSScriptRoot -ChildPath 'logs'
     New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
-    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $encoding = $utf8NoBom
     $errorRecord = [ordered]@{
         loggedAt = (Get-Date).ToString('o')
         eventName = 'LoggerError'
         error = $_.Exception.Message
         stack = $_.ScriptStackTrace
     } | ConvertTo-Json -Depth 20 -Compress
-    [System.IO.File]::AppendAllText((Join-Path $logRoot 'logger-errors.jsonl'), $errorRecord + [Environment]::NewLine, $encoding)
+    Add-TextWithRetry -Path (Join-Path $logRoot 'logger-errors.jsonl') -Text ($errorRecord + [Environment]::NewLine) -Encoding $encoding
     exit 1
 }

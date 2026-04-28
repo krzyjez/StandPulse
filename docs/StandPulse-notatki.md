@@ -269,7 +269,3 @@ Proponowany kierunek MVP:
 
 ---
 
-## Linki robocze
-
-- Seeed Studio — mmWave for XIAO:
-  - https://wiki.seeedstudio.com/mmwave_for_xiao/
