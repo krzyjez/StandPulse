@@ -1,1 +1,3 @@
 hooks/logs/
+bin/
+obj/

@@ -57,7 +57,7 @@ void loop() {
     snprintf(
       line,
       sizeof(line),
-      "{\"present\":%s,\"targetStatus\":\"%s\",\"distanceMm\":%d,\"radarMode\":%d}",
+      "{\"present\":%s,\"targetStatus\":\"%s\",\"distanceCm\":%d,\"radarMode\":%d}",
       isPresent(radarStatus.targetStatus) ? "true" : "false",
       targetStatusToString(radarStatus.targetStatus),
       radarStatus.distance,

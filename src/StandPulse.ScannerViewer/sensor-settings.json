@@ -1,0 +1,10 @@
+{
+  "serial": {
+    "portName": "COM4",
+    "baudRate": 115200
+  },
+  "presence": {
+    "maxDistanceCm": 120,
+    "stateChangeDelaySeconds": 10
+  }
+}
