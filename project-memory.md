@@ -27,7 +27,7 @@
 - Repozytorium jest prowadzone w Windows i PowerShell.
 - Nie traktuj katalogów `dist`, `obj` ani `src/**/bin` jako źródeł prawdy; to artefakty wynikowe.
 - Rootowy katalog `bin/StandPulse.SensorHost` jest publikowaną paczką hosta i jest częścią repozytorium.
-- User PATH powinien zawierać `bin/StandPulse.SensorHost` i `bin/StandPulse.SensorProbe`; autostart użytkownika wskazuje `StandPulse.SensorHost.exe run`.
+- User PATH powinien zawierać `bin/StandPulse.SensorHost` i `bin/StandPulse.SensorProbe`; autostart użytkownika wskazuje `StandPulse.SensorHost.exe debug`.
 - Przy zmianach w C# stosuj lokalne reguły z `src/StandPulse.ScannerViewer/AGENTS.md`.
 
 ## Pitfalls

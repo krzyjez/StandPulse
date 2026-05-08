@@ -7,7 +7,7 @@ $probeDir = Join-Path $repoRoot "bin\StandPulse.SensorProbe"
 $hostExe = Join-Path $hostDir "StandPulse.SensorHost.exe"
 $runKeyPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $runValueName = "StandPulse.SensorHost"
-$runValue = "`"$hostExe`" run"
+$runValue = "`"$hostExe`" debug"
 
 if (-not (Test-Path -LiteralPath $hostExe)) {
     throw "Host exe not found: $hostExe. Run scripts\publish-sensorhost.ps1 first."

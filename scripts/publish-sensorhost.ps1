@@ -40,3 +40,5 @@ dotnet publish `
 Write-Host "Published StandPulse.SensorHost to: $publishDir"
 Write-Host "Run with:"
 Write-Host "  $publishDir\StandPulse.SensorHost.exe run"
+Write-Host "Debug with:"
+Write-Host "  $publishDir\StandPulse.SensorHost.exe debug"

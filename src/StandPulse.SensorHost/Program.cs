@@ -21,7 +21,8 @@ internal static class Program
       return 0;
     }
 
-    if (!_ShouldRun(args))
+    var debugEnabled = _IsDebugCommand(args);
+    if (!_ShouldRun(args) && !debugEnabled)
     {
       _WriteHelp();
       return 0;
@@ -29,7 +30,7 @@ internal static class Program
 
     var settings = HostSettings.Load();
     var store = new SensorStateStore();
-    var host = new SensorHostService(settings, store);
+    var host = new SensorHostService(settings, store, debugEnabled);
     using var cancellation = new CancellationTokenSource();
 
     Console.CancelKeyPress += (_, args) =>
@@ -39,6 +40,7 @@ internal static class Program
     };
 
     Console.WriteLine("StandPulse.SensorHost");
+    Console.WriteLine($"Mode: {(debugEnabled ? "debug" : "run")}");
     Console.WriteLine($"Source: {settings.Source.Mode}");
     if (settings.Source.IsSerial)
       Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
@@ -49,10 +51,16 @@ internal static class Program
     return 0;
   }
 
-  // Sprawdza, czy host ma przejść w tryb pracy ciągłej.
+  // Sprawdza, czy host ma przejść w normalny tryb pracy ciągłej.
   private static bool _ShouldRun(string[] args)
   {
     return args.Length == 1 && string.Equals(args[0], "run", StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Sprawdza, czy host ma przejść w tryb pracy ciągłej z diagnostyką.
+  private static bool _IsDebugCommand(string[] args)
+  {
+    return args.Length == 1 && string.Equals(args[0], "debug", StringComparison.OrdinalIgnoreCase);
   }
 
   // Sprawdza, czy użytkownik pyta o ścieżkę dokumentacji obok exe.
@@ -77,6 +85,7 @@ internal static class Program
     Console.WriteLine();
     Console.WriteLine("Użycie:");
     Console.WriteLine("  StandPulse.SensorHost.exe run");
+    Console.WriteLine("  StandPulse.SensorHost.exe debug");
     Console.WriteLine("  StandPulse.SensorHost.exe help");
     Console.WriteLine("  StandPulse.SensorHost.exe -help");
     Console.WriteLine("  StandPulse.SensorHost.exe --help");
@@ -84,6 +93,7 @@ internal static class Program
     Console.WriteLine();
     Console.WriteLine("Komendy:");
     Console.WriteLine("  run    Uruchamia hosta sensora.");
+    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem surowych linii i decyzji interpretacji.");
     Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
     Console.WriteLine("  doc    Wypisuje ścieżkę do dokumentacji Markdown obok programu.");
     Console.WriteLine();
@@ -106,12 +116,14 @@ internal sealed class SensorHostService
 
   private readonly HostSettings _settings;
   private readonly SensorStateStore _store;
+  private readonly bool _debugEnabled;
   private int _consecutiveSensorErrors;
 
-  public SensorHostService(HostSettings settings, SensorStateStore store)
+  public SensorHostService(HostSettings settings, SensorStateStore store, bool debugEnabled)
   {
     _settings = settings;
     _store = store;
+    _debugEnabled = debugEnabled;
   }
 
   /// <summary>Uruchamia odczyt sensora, kontrolę timeoutu i serwer named pipe.</summary>
@@ -166,8 +178,8 @@ internal sealed class SensorHostService
         {
           try
           {
-            var line = serialPort.ReadLine().Trim();
-            _HandleSensorLine(line);
+            var rawLine = serialPort.ReadLine();
+            _HandleSensorLine(rawLine);
           }
           catch (TimeoutException)
           {
@@ -189,38 +201,60 @@ internal sealed class SensorHostService
   }
 
   // Interpretuje jedną linię z firmware i aktualizuje stan stabilny.
-  private void _HandleSensorLine(string line)
+  private void _HandleSensorLine(string rawLine)
   {
+    var line = rawLine.Trim();
+    _WriteDebug($"RAW length={rawLine.Length} text=\"{_EscapeForLog(rawLine)}\" hex={_FormatCodeUnits(rawLine)}");
+
     try
     {
       var firmwareEvent = SensorFirmwareEvent.Parse(line);
-      if (firmwareEvent?.Event == "radar_read_error")
+      if (firmwareEvent is not null)
       {
-        _consecutiveSensorErrors++;
-        Console.WriteLine($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
+        _WriteDebug($"EVENT event={firmwareEvent.Event}");
+        if (firmwareEvent.Event == "radar_read_error")
+        {
+          _consecutiveSensorErrors++;
+          Console.WriteLine($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
 
-        if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
-          _store.SetTechnicalStatus(SensorStatus.Error);
+          if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
+            _store.SetTechnicalStatus(SensorStatus.Error);
+
+          _WriteDebug($"ERROR_COUNTER value={_consecutiveSensorErrors} max={_settings.Presence.MaxConsecutiveSensorErrors} state={_FormatDebugState()}");
+        }
+        else
+        {
+          _WriteDebug("EVENT ignored=true");
+        }
 
         return;
       }
 
       var sample = SensorSample.Parse(line);
       if (sample is null)
+      {
+        _WriteDebug("SAMPLE ignored=true reason=missing-present");
         return;
+      }
 
       _consecutiveSensorErrors = 0;
       var presentAtDesk = sample.Present &&
                           sample.DistanceCm.HasValue &&
                           sample.DistanceCm.Value < _settings.Presence.MaxDistanceCm;
+      var sampleStatus = presentAtDesk ? SensorStatus.Presence : SensorStatus.Absence;
+
+      _WriteDebug(
+        $"SAMPLE present={sample.Present} targetStatus={sample.TargetStatus} distanceCm={sample.DistanceCm?.ToString() ?? "-"} maxDistanceCm={_settings.Presence.MaxDistanceCm} decision={sampleStatus}");
 
       _store.RecordSample(
-        presentAtDesk ? SensorStatus.Presence : SensorStatus.Absence,
+        sampleStatus,
         TimeSpan.FromSeconds(_settings.Presence.StateChangeDelaySeconds));
+      _WriteDebug($"STATE {_FormatDebugState()}");
     }
     catch (JsonException ex)
     {
       Console.WriteLine($"Błąd parsowania próbki: {ex.Message}");
+      _WriteDebug($"PARSE_ERROR message=\"{_EscapeForLog(ex.Message)}\" source=\"{_EscapeForLog(line)}\"");
     }
   }
 
@@ -390,6 +424,73 @@ internal sealed class SensorHostService
     }
   }
 
+  // Wypisuje linię diagnostyczną tylko w trybie debug.
+  private void _WriteDebug(string message)
+  {
+    if (_debugEnabled)
+      Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss.fff} DEBUG {message}");
+  }
+
+  // Formatuje snapshot i kandydata stabilizacji do krótkiego logu debug.
+  private string _FormatDebugState()
+  {
+    var state = _store.GetDebugState();
+    return $"snapshot={state.Snapshot.Status} lastSampleAt={_FormatTime(state.Snapshot.LastSampleAt)} stableSince={_FormatTime(state.Snapshot.StableSince)} candidate={state.CandidateStatus?.ToString() ?? "-"} candidateSince={_FormatTime(state.CandidateSince)}";
+  }
+
+  // Formatuje czas w sposób czytelny w konsoli.
+  private static string _FormatTime(DateTimeOffset? value)
+  {
+    return value?.ToString("HH:mm:ss.fff") ?? "-";
+  }
+
+  // Escapuje znaki sterujące, żeby surowa linia była widoczna w jednym wpisie logu.
+  private static string _EscapeForLog(string value)
+  {
+    var builder = new StringBuilder(value.Length);
+    foreach (var character in value)
+    {
+      switch (character)
+      {
+        case '\r':
+          builder.Append("\\r");
+          break;
+        case '\n':
+          builder.Append("\\n");
+          break;
+        case '\t':
+          builder.Append("\\t");
+          break;
+        default:
+          if (char.IsControl(character))
+            builder.Append($"\\u{(int)character:X4}");
+          else
+            builder.Append(character);
+          break;
+      }
+    }
+
+    return builder.ToString();
+  }
+
+  // Pokazuje kody znaków odebranej linii po dekodowaniu przez SerialPort.
+  private static string _FormatCodeUnits(string value)
+  {
+    if (value.Length == 0)
+      return "-";
+
+    var builder = new StringBuilder(value.Length * 3);
+    foreach (var character in value)
+    {
+      if (builder.Length > 0)
+        builder.Append(' ');
+
+      builder.Append(((int)character).ToString("X2"));
+    }
+
+    return builder.ToString();
+  }
+
   private sealed record SensorCommand(string Command)
   {
     // Parsuje komendę klienta pipe.
@@ -418,6 +519,13 @@ internal sealed class SensorStateStore
   {
     lock (_syncRoot)
       return _snapshot;
+  }
+
+  /// <summary>Pobiera techniczny stan stabilizatora do logowania diagnostycznego.</summary>
+  public SensorDebugState GetDebugState()
+  {
+    lock (_syncRoot)
+      return new SensorDebugState(_snapshot, _candidateStatus, _candidateSince);
   }
 
   /// <summary>Rejestruje subskrypcję zmian stabilnego statusu.</summary>
@@ -555,6 +663,11 @@ internal sealed record SensorSnapshot(
   [JsonPropertyOrder(0)]
   public string Type => "status";
 }
+
+internal sealed record SensorDebugState(
+  SensorSnapshot Snapshot,
+  SensorStatus? CandidateStatus,
+  DateTimeOffset? CandidateSince);
 
 internal enum SensorStatus
 {

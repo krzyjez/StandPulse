@@ -14,6 +14,12 @@ Host uruchamia się komendą:
 .\StandPulse.SensorHost.exe run
 ```
 
+Tryb diagnostyczny działa jak `run`, ale loguje surowe linie z sensora oraz decyzje interpretacji:
+
+```powershell
+.\StandPulse.SensorHost.exe debug
+```
+
 Bez argumentów program pokazuje pomoc i kończy działanie:
 
 ```powershell
@@ -39,7 +45,7 @@ Pomoc można też wyświetlić komendami:
 Do autostartu systemu należy użyć komendy:
 
 ```powershell
-P:\StandPulse\bin\StandPulse.SensorHost\StandPulse.SensorHost.exe run
+P:\StandPulse\bin\StandPulse.SensorHost\StandPulse.SensorHost.exe debug
 ```
 
 Program działa w trybie ciągłym do czasu zamknięcia procesu.
