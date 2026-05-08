@@ -30,6 +30,12 @@ Opublikowany program:
 bin/StandPulse.SensorHost
 ```
 
+Testowy klient named pipe:
+
+```text
+bin/StandPulse.SensorProbe
+```
+
 Dokumentacja użytkowa opublikowanego programu:
 
 ```text
@@ -56,6 +62,22 @@ Komenda `doc` wypisuje ścieżkę do pliku dokumentacji Markdown leżącego obok
 
 ```powershell
 StandPulse.SensorHost.exe doc
+```
+
+## SensorProbe
+
+`StandPulse.SensorProbe` jest prostą aplikacją testową potwierdzającą, że `StandPulse.SensorHost` odpowiada przez Windows Named Pipe.
+
+Pobranie aktualnego statusu:
+
+```powershell
+StandPulse.SensorProbe.exe get
+```
+
+Subskrypcja ograniczona do kilku komunikatów:
+
+```powershell
+StandPulse.SensorProbe.exe watch --count 3
 ```
 
 ## Konfiguracja
@@ -161,6 +183,18 @@ Publikacja programu do rootowego katalogu `bin`:
 
 ```powershell
 .\scripts\publish-sensorhost.ps1
+```
+
+Publikacja aplikacji testowej:
+
+```powershell
+.\scripts\publish-sensorprobe.ps1
+```
+
+Instalacja user-level dodająca hosta do autostartu oraz katalogi `bin` do user `PATH`:
+
+```powershell
+.\scripts\install-sensorhost-user.ps1
 ```
 
 Skrypt publikuje hosta do:

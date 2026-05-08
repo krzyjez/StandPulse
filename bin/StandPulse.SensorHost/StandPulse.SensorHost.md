@@ -44,6 +44,29 @@ P:\StandPulse\bin\StandPulse.SensorHost\StandPulse.SensorHost.exe run
 
 Program działa w trybie ciągłym do czasu zamknięcia procesu.
 
+Skrypt instalacyjny ustawia autostart dla bieżącego użytkownika:
+
+```powershell
+P:\StandPulse\scripts\install-sensorhost-user.ps1
+```
+
+Skrypt dodaje wpis `StandPulse.SensorHost` w:
+
+```text
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+```
+
+## PATH
+
+Skrypt `install-sensorhost-user.ps1` dodaje do user `PATH` katalogi:
+
+```text
+P:\StandPulse\bin\StandPulse.SensorHost
+P:\StandPulse\bin\StandPulse.SensorProbe
+```
+
+Po zmianie `PATH` trzeba otworzyć nowe okno terminala.
+
 ## Konfiguracja
 
 Konfiguracja znajduje się w pliku:
@@ -127,6 +150,34 @@ await foreach (var snapshot in client.WatchAsync())
 {
   Console.WriteLine(snapshot.Status);
 }
+```
+
+## Aplikacja testowa
+
+Katalog:
+
+```text
+P:\StandPulse\bin\StandPulse.SensorProbe
+```
+
+zawiera prostą aplikację testową łączącą się z hostem przez named pipe.
+
+Pobranie aktualnego statusu:
+
+```powershell
+StandPulse.SensorProbe.exe get
+```
+
+Subskrypcja trzech statusów:
+
+```powershell
+StandPulse.SensorProbe.exe watch --count 3
+```
+
+Wskazanie niestandardowej nazwy pipe:
+
+```powershell
+StandPulse.SensorProbe.exe get --pipe StandPulse.Sensor
 ```
 
 ## Test fake sensora
