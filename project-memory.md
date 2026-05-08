@@ -2,11 +2,11 @@
 
 ## Sources Of Truth
 
-- `docs/StandPulse-notatki.md` opisuje cel MVP, główne założenia i logikę działania systemu.
-- `docs/StandPulse-komunikacja-sensora.md` opisuje decyzję o lokalnej komunikacji przez Windows Named Pipe.
+- `docs/StandPulse-sensor-host.md` opisuje aktualną architekturę `StandPulse.SensorHost`, named pipe, konfigurację i testy fake sensora.
 - `docs/StandPulse-firmware-sensor.md` opisuje aktualny firmware, strukturę sensora i bieżące pliki techniczne.
 - `firmware/standpulse_sensor/standpulse_sensor.ino` jest źródłem aktualnego firmware'u dla XIAO ESP32-C3.
 - `src/StandPulse.ScannerViewer` zawiera aplikację C# / WinForms do obserwacji danych z sensora.
+- `bin/StandPulse.SensorHost` zawiera opublikowany exe hosta, dokumentację użytkową i kopiowalny przykład klienta C#.
 
 ## Architecture
 
@@ -23,7 +23,8 @@
 ## Operational Conventions
 
 - Repozytorium jest prowadzone w Windows i PowerShell.
-- Nie traktuj katalogów `dist`, `bin` i `obj` jako źródeł prawdy; to artefakty wynikowe.
+- Nie traktuj katalogów `dist`, `obj` ani `src/**/bin` jako źródeł prawdy; to artefakty wynikowe.
+- Rootowy katalog `bin/StandPulse.SensorHost` jest publikowaną paczką hosta i jest częścią repozytorium.
 - Przy zmianach w C# stosuj lokalne reguły z `src/StandPulse.ScannerViewer/AGENTS.md`.
 
 ## Pitfalls
