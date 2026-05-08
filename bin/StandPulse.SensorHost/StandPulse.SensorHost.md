@@ -26,6 +26,8 @@ Po starcie program wypisuje na konsoli ścieżkę bieżącego logu. Pliki logów
 %LOCALAPPDATA%\StandPulse\SensorHost\logs
 ```
 
+Pojedynczy plik logu ma limit 100 KB. Po dojściu do limitu host działa dalej, ale bieżące logowanie debug zostaje wyłączone dla tego uruchomienia.
+
 Bez argumentów program pokazuje pomoc i kończy działanie:
 
 ```powershell

@@ -677,8 +677,12 @@ internal sealed class SensorStateStore
 
 internal sealed class SensorDebugLogger : IDisposable
 {
+  private const long MaxLogBytes = 100 * 1024;
+
   private readonly object _syncRoot = new();
   private readonly StreamWriter _writer;
+  private long _writtenBytes;
+  private bool _isDisabled;
 
   // Zachowuje otwarty plik logu dla jednego uruchomienia debug.
   private SensorDebugLogger(string path, StreamWriter writer)
@@ -707,6 +711,7 @@ internal sealed class SensorDebugLogger : IDisposable
 
     var logger = new SensorDebugLogger(path, writer);
     logger.WriteLine("Debug log started.");
+    logger.WriteLine($"Debug log limit: {MaxLogBytes} bytes.");
     return logger;
   }
 
@@ -714,7 +719,25 @@ internal sealed class SensorDebugLogger : IDisposable
   public void WriteLine(string message)
   {
     lock (_syncRoot)
-      _writer.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}");
+    {
+      if (_isDisabled)
+        return;
+
+      var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}";
+      var bytes = Encoding.UTF8.GetByteCount(line) + Environment.NewLine.Length;
+
+      if (_writtenBytes + bytes > MaxLogBytes)
+      {
+        var stopLine = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} Debug log stopped after reaching {MaxLogBytes} bytes.";
+        _writer.WriteLine(stopLine);
+        _writtenBytes += Encoding.UTF8.GetByteCount(stopLine) + Environment.NewLine.Length;
+        _isDisabled = true;
+        return;
+      }
+
+      _writer.WriteLine(line);
+      _writtenBytes += bytes;
+    }
   }
 
   /// <summary>Zamyka plik logu po zakończeniu procesu.</summary>
