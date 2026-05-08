@@ -29,8 +29,10 @@ internal static class Program
     }
 
     var settings = HostSettings.Load();
-    var store = new SensorStateStore();
-    var host = new SensorHostService(settings, store, debugEnabled);
+    using var debugLogger = debugEnabled ? SensorDebugLogger.Create() : null;
+    Action<string>? writeLog = debugLogger is null ? null : debugLogger.WriteLine;
+    var store = new SensorStateStore(writeLog);
+    var host = new SensorHostService(settings, store, debugLogger);
     using var cancellation = new CancellationTokenSource();
 
     Console.CancelKeyPress += (_, args) =>
@@ -41,6 +43,8 @@ internal static class Program
 
     Console.WriteLine("StandPulse.SensorHost");
     Console.WriteLine($"Mode: {(debugEnabled ? "debug" : "run")}");
+    if (debugLogger is not null)
+      Console.WriteLine($"Log: {debugLogger.Path}");
     Console.WriteLine($"Source: {settings.Source.Mode}");
     if (settings.Source.IsSerial)
       Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
@@ -93,7 +97,7 @@ internal static class Program
     Console.WriteLine();
     Console.WriteLine("Komendy:");
     Console.WriteLine("  run    Uruchamia hosta sensora.");
-    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem surowych linii i decyzji interpretacji.");
+    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem surowych linii i decyzji interpretacji do pliku.");
     Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
     Console.WriteLine("  doc    Wypisuje ścieżkę do dokumentacji Markdown obok programu.");
     Console.WriteLine();
@@ -116,14 +120,14 @@ internal sealed class SensorHostService
 
   private readonly HostSettings _settings;
   private readonly SensorStateStore _store;
-  private readonly bool _debugEnabled;
+  private readonly SensorDebugLogger? _debugLogger;
   private int _consecutiveSensorErrors;
 
-  public SensorHostService(HostSettings settings, SensorStateStore store, bool debugEnabled)
+  public SensorHostService(HostSettings settings, SensorStateStore store, SensorDebugLogger? debugLogger)
   {
     _settings = settings;
     _store = store;
-    _debugEnabled = debugEnabled;
+    _debugLogger = debugLogger;
   }
 
   /// <summary>Uruchamia odczyt sensora, kontrolę timeoutu i serwer named pipe.</summary>
@@ -193,7 +197,7 @@ internal sealed class SensorHostService
       }
       catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
       {
-        Console.WriteLine($"Sensor niedostępny: {ex.Message}");
+        _WriteOperationalLog($"Sensor niedostępny: {ex.Message}");
         _store.SetTechnicalStatus(SensorStatus.SensorNotAvailable);
         await _DelayBeforeReconnectAsync(cancellationToken);
       }
@@ -215,7 +219,7 @@ internal sealed class SensorHostService
         if (firmwareEvent.Event == "radar_read_error")
         {
           _consecutiveSensorErrors++;
-          Console.WriteLine($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
+          _WriteOperationalLog($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
 
           if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
             _store.SetTechnicalStatus(SensorStatus.Error);
@@ -253,7 +257,7 @@ internal sealed class SensorHostService
     }
     catch (JsonException ex)
     {
-      Console.WriteLine($"Błąd parsowania próbki: {ex.Message}");
+      _WriteOperationalLog($"Błąd parsowania próbki: {ex.Message}");
       _WriteDebug($"PARSE_ERROR message=\"{_EscapeForLog(ex.Message)}\" source=\"{_EscapeForLog(line)}\"");
     }
   }
@@ -261,7 +265,7 @@ internal sealed class SensorHostService
   // Generuje przewidywalne próbki bez fizycznego sensora.
   private async Task _ReadFakeSamplesAsync(CancellationToken cancellationToken)
   {
-    Console.WriteLine("Używam fake źródła próbek sensora.");
+    _WriteOperationalLog("Używam fake źródła próbek sensora.");
 
     while (!cancellationToken.IsCancellationRequested)
     {
@@ -333,13 +337,13 @@ internal sealed class SensorHostService
           TaskCreationOptions.LongRunning,
           TaskScheduler.Default);
       }
-      catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
-      {
-        pipe.Dispose();
-        if (!cancellationToken.IsCancellationRequested)
-          Console.WriteLine($"Błąd serwera pipe: {ex.Message}");
-      }
+    catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
+    {
+      pipe.Dispose();
+      if (!cancellationToken.IsCancellationRequested)
+        _WriteOperationalLog($"Błąd serwera pipe: {ex.Message}");
     }
+  }
   }
 
   // Loguje błędy pojedynczego klienta pipe bez zatrzymywania hosta.
@@ -351,7 +355,7 @@ internal sealed class SensorHostService
     }
     catch (Exception ex) when (ex is IOException or ObjectDisposedException or JsonException or InvalidOperationException)
     {
-      Console.WriteLine($"Błąd klienta pipe: {ex.Message}");
+      _WriteOperationalLog($"Błąd klienta pipe: {ex.Message}");
       pipe.Dispose();
     }
   }
@@ -368,7 +372,7 @@ internal sealed class SensorHostService
 
     var line = reader.ReadLine();
     var command = SensorCommand.Parse(line);
-    Console.WriteLine($"Pipe command: {command?.Command ?? "-"}");
+    _WriteOperationalLog($"Pipe command: {command?.Command ?? "-"}");
 
     if (command?.Command == "get")
     {
@@ -427,8 +431,16 @@ internal sealed class SensorHostService
   // Wypisuje linię diagnostyczną tylko w trybie debug.
   private void _WriteDebug(string message)
   {
-    if (_debugEnabled)
-      Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss.fff} DEBUG {message}");
+    _debugLogger?.WriteLine($"DEBUG {message}");
+  }
+
+  // Kieruje zwykłe komunikaty hosta na konsolę albo do pliku w trybie debug.
+  private void _WriteOperationalLog(string message)
+  {
+    if (_debugLogger is not null)
+      _debugLogger.WriteLine(message);
+    else
+      Console.WriteLine(message);
   }
 
   // Formatuje snapshot i kandydata stabilizacji do krótkiego logu debug.
@@ -508,11 +520,18 @@ internal sealed class SensorStateStore
 {
   private readonly object _syncRoot = new();
   private readonly ConcurrentDictionary<Guid, ChannelWriter<SensorSnapshot>> _subscriptions = new();
+  private readonly Action<string>? _writeLog;
 
   private SensorSnapshot _snapshot = new(SensorStatus.SensorNotAvailable, null, DateTimeOffset.Now);
   private SensorStatus? _candidateStatus;
   private DateTimeOffset? _candidateSince;
   private DateTimeOffset? _lastSampleAt;
+
+  /// <summary>Tworzy magazyn stanu z opcjonalnym miejscem zapisu komunikatów statusu.</summary>
+  public SensorStateStore(Action<string>? writeLog = null)
+  {
+    _writeLog = writeLog;
+  }
 
   /// <summary>Pobiera aktualny snapshot stanu sensora.</summary>
   public SensorSnapshot GetSnapshot()
@@ -627,7 +646,11 @@ internal sealed class SensorStateStore
         _subscriptions.TryRemove(id, out _);
     }
 
-    Console.WriteLine($"{snapshot.StableSince:HH:mm:ss} status={snapshot.Status}");
+    var message = $"{snapshot.StableSince:HH:mm:ss} status={snapshot.Status}";
+    if (_writeLog is not null)
+      _writeLog(message);
+    else
+      Console.WriteLine(message);
   }
 
   internal sealed class SensorSubscription : IDisposable
@@ -649,6 +672,56 @@ internal sealed class SensorStateStore
     {
       _owner._Unsubscribe(_id);
     }
+  }
+}
+
+internal sealed class SensorDebugLogger : IDisposable
+{
+  private readonly object _syncRoot = new();
+  private readonly StreamWriter _writer;
+
+  // Zachowuje otwarty plik logu dla jednego uruchomienia debug.
+  private SensorDebugLogger(string path, StreamWriter writer)
+  {
+    Path = path;
+    _writer = writer;
+  }
+
+  public string Path { get; }
+
+  /// <summary>Tworzy plik diagnostyczny dla bieżącego uruchomienia hosta.</summary>
+  public static SensorDebugLogger Create()
+  {
+    var directory = System.IO.Path.Combine(
+      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+      "StandPulse",
+      "SensorHost",
+      "logs");
+    Directory.CreateDirectory(directory);
+
+    var path = System.IO.Path.Combine(directory, $"sensorhost-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.log");
+    var writer = new StreamWriter(path, append: false, new UTF8Encoding(false))
+    {
+      AutoFlush = true
+    };
+
+    var logger = new SensorDebugLogger(path, writer);
+    logger.WriteLine("Debug log started.");
+    return logger;
+  }
+
+  /// <summary>Zapisuje jedną linię logu z lokalnym znacznikiem czasu.</summary>
+  public void WriteLine(string message)
+  {
+    lock (_syncRoot)
+      _writer.WriteLine($"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}");
+  }
+
+  /// <summary>Zamyka plik logu po zakończeniu procesu.</summary>
+  public void Dispose()
+  {
+    lock (_syncRoot)
+      _writer.Dispose();
   }
 }
 

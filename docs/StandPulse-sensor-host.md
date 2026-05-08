@@ -56,10 +56,16 @@ Host uruchamia się komendą:
 StandPulse.SensorHost.exe run
 ```
 
-Tryb diagnostyczny działa jak `run`, ale dopisuje surowe linie z sensora oraz decyzje interpretacji:
+Tryb diagnostyczny działa jak `run`, ale zapisuje surowe linie z sensora oraz decyzje interpretacji do pliku logu:
 
 ```powershell
 StandPulse.SensorHost.exe debug
+```
+
+Po starcie program wypisuje na konsoli ścieżkę bieżącego logu. Pliki logów są tworzone w:
+
+```text
+%LOCALAPPDATA%\StandPulse\SensorHost\logs
 ```
 
 Bez argumentów oraz dla `help`, `-help` i `--help` program pokazuje pomoc.
@@ -203,7 +209,7 @@ Instalacja user-level dodająca hosta do autostartu oraz katalogi `bin` do user 
 .\scripts\install-sensorhost-user.ps1
 ```
 
-Autostart używa trybu `debug`, żeby po zalogowaniu było widać surowe linie z sensora i wynik interpretacji hosta.
+Autostart używa trybu `debug`, żeby po zalogowaniu host zapisywał surowe linie z sensora i wynik interpretacji do pliku logu.
 
 Skrypt publikuje hosta do:
 

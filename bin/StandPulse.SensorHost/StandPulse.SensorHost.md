@@ -14,10 +14,16 @@ Host uruchamia się komendą:
 .\StandPulse.SensorHost.exe run
 ```
 
-Tryb diagnostyczny działa jak `run`, ale loguje surowe linie z sensora oraz decyzje interpretacji:
+Tryb diagnostyczny działa jak `run`, ale zapisuje surowe linie z sensora oraz decyzje interpretacji do pliku logu:
 
 ```powershell
 .\StandPulse.SensorHost.exe debug
+```
+
+Po starcie program wypisuje na konsoli ścieżkę bieżącego logu. Pliki logów są tworzone w:
+
+```text
+%LOCALAPPDATA%\StandPulse\SensorHost\logs
 ```
 
 Bez argumentów program pokazuje pomoc i kończy działanie:
