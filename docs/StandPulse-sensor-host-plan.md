@@ -15,7 +15,7 @@ Uzasadnienie:
 1. nazwa jest zgodna z nazwami projektów .NET,
 2. jasno wskazuje, że proces jest hostem sensora,
 3. nie sugeruje, że aplikacja odpowiada za logikę czasu pracy, alarmy albo UI,
-4. pasuje do przyszłej biblioteki klienckiej `StandPulse.SensorClient`.
+4. pasuje do prostego pliku klienckiego kopiowanego do innych aplikacji.
 
 ## Odpowiedzialność
 
@@ -103,24 +103,35 @@ Firmware może publikować surowe próbki kilka razy na sekundę. `StandPulse.Se
 
 Publikacja do klientów jest rzadsza i zależy od zmiany stabilnego statusu. Aplikacja monitorująca czas pracy nie polluje sensora co sekundę. Aktualizuje własny licznik lokalnym timerem, a zmianę obecności otrzymuje przez `watch`.
 
-## Współpraca z aplikacją czasu pracy
+## Użycie w innych aplikacjach
 
-Aplikacja monitorująca czas pracy używa `StandPulse.SensorHost` jako źródła informacji o obecności.
+Inne aplikacje korzystają z gotowego pliku klienta `docs/examples/standpulse-sensor-client.cs`.
 
 Przepływ:
 
 ```text
-sensor -> StandPulse.SensorHost -> named pipe -> aplikacja czasu pracy -> UI i alarmy
+sensor -> StandPulse.SensorHost -> named pipe -> aplikacja kliencka
 ```
 
-Aplikacja czasu pracy:
+Aplikacja kliencka:
 
-1. przy starcie wykonuje `get`,
-2. następnie otwiera `watch`,
-3. nalicza czas pracy lokalnie, gdy status to `presence`,
-4. obsługuje krótkie nieobecności według własnych reguł cyklu pracy,
-5. traktuje `sensorNotAvailable` jako problem techniczny, a nie jako zwykłą nieobecność,
-6. pokazuje alarmy i komunikaty użytkownikowi.
+1. kopiuje plik `standpulse-sensor-client.cs` do własnego projektu C#,
+2. uruchamia `StandPulse.SensorHost` jako źródło statusu sensora,
+3. przy starcie wykonuje `GetStatusAsync`,
+4. następnie używa `WatchAsync` do odbierania aktualnego statusu i późniejszych zmian,
+5. nie otwiera portu COM bezpośrednio.
+
+Minimalne użycie:
+
+```csharp
+var client = new StandPulseSensorClient();
+var current = await client.GetStatusAsync();
+
+await foreach (var snapshot in client.WatchAsync())
+{
+  Console.WriteLine(snapshot.Status);
+}
+```
 
 ## Konfiguracja
 
@@ -150,7 +161,7 @@ Przykładowa struktura:
 
 ## Relacja do ScannerViewer
 
-`StandPulse.ScannerViewer` pozostaje narzędziem diagnostycznym. Może przejściowo czytać COM bezpośrednio, ale w normalnym modelu pracy korzysta z `StandPulse.SensorHost`, aby nie konkurować o port szeregowy z innymi aplikacjami.
+`StandPulse.ScannerViewer` pozostaje narzędziem diagnostycznym do rozpoznawania charakterystyki pracy sensora. Czyta port COM bezpośrednio i nie jest klientem `StandPulse.SensorHost`.
 
 ## Pierwszy zakres implementacji
 
@@ -164,4 +175,4 @@ Pierwszy zakres obejmuje:
 6. komendy `get` i `watch`,
 7. prosty log tekstowy zdarzeń hosta.
 
-Po tym etapie aplikacja czasu pracy może opierać się na stabilnym kontrakcie obecności bez znajomości szczegółów sensora.
+Po tym etapie aplikacje klienckie mogą opierać się na stabilnym statusie obecności bez znajomości szczegółów sensora i named pipe.

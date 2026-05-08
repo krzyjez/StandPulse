@@ -1,0 +1,110 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.IO.Pipes;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace StandPulse;
+
+/// <summary>Prosty klient named pipe do komunikacji ze StandPulse.SensorHost.</summary>
+public sealed class StandPulseSensorClient
+{
+  private static readonly Encoding PipeEncoding = new UTF8Encoding(false);
+  private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+  {
+    Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+  };
+
+  private readonly string _serverName;
+  private readonly string _pipeName;
+
+  /// <summary>Tworzy klienta dla lokalnego pipe StandPulse.Sensor.</summary>
+  public StandPulseSensorClient(string pipeName = "StandPulse.Sensor", string serverName = ".")
+  {
+    _pipeName = pipeName;
+    _serverName = serverName;
+  }
+
+  /// <summary>Pobiera aktualny snapshot statusu z hosta sensora.</summary>
+  public async Task<StandPulseSensorSnapshot> GetStatusAsync(CancellationToken cancellationToken = default)
+  {
+    using var pipe = await _ConnectAsync(cancellationToken);
+    using var reader = new StreamReader(pipe, PipeEncoding, false, 1024, true);
+    await using var writer = new StreamWriter(pipe, PipeEncoding, 1024, true)
+    {
+      AutoFlush = true
+    };
+
+    await writer.WriteLineAsync("""{"command":"get"}""".AsMemory(), cancellationToken);
+
+    var line = await reader.ReadLineAsync(cancellationToken);
+    return _ParseSnapshot(line);
+  }
+
+  /// <summary>Subskrybuje aktualny status i późniejsze zmiany stabilnego statusu.</summary>
+  public async IAsyncEnumerable<StandPulseSensorSnapshot> WatchAsync(
+    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+  {
+    using var pipe = await _ConnectAsync(cancellationToken);
+    using var reader = new StreamReader(pipe, PipeEncoding, false, 1024, true);
+    await using var writer = new StreamWriter(pipe, PipeEncoding, 1024, true)
+    {
+      AutoFlush = true
+    };
+
+    await writer.WriteLineAsync("""{"command":"watch"}""".AsMemory(), cancellationToken);
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+      var line = await reader.ReadLineAsync(cancellationToken);
+      if (line is null)
+        yield break;
+
+      yield return _ParseSnapshot(line);
+    }
+  }
+
+  // Otwiera połączenie z lokalnym named pipe.
+  private async Task<NamedPipeClientStream> _ConnectAsync(CancellationToken cancellationToken)
+  {
+    var pipe = new NamedPipeClientStream(
+      _serverName,
+      _pipeName,
+      PipeDirection.InOut,
+      PipeOptions.Asynchronous);
+
+    await pipe.ConnectAsync(cancellationToken);
+    return pipe;
+  }
+
+  // Parsuje pojedynczą linię JSON ze snapshotem statusu.
+  private static StandPulseSensorSnapshot _ParseSnapshot(string? line)
+  {
+    if (string.IsNullOrWhiteSpace(line))
+      throw new InvalidDataException("StandPulse.SensorHost returned an empty response.");
+
+    var snapshot = JsonSerializer.Deserialize<StandPulseSensorSnapshot>(line, JsonOptions);
+    return snapshot ?? throw new InvalidDataException("StandPulse.SensorHost returned an invalid status response.");
+  }
+}
+
+/// <summary>Snapshot stabilnego stanu obecności publikowany przez StandPulse.SensorHost.</summary>
+public sealed record StandPulseSensorSnapshot(
+  string Type,
+  StandPulseSensorStatus Status,
+  DateTimeOffset? LastSampleAt,
+  DateTimeOffset StableSince);
+
+/// <summary>Stabilny status obecności udostępniany aplikacjom przez StandPulse.SensorHost.</summary>
+public enum StandPulseSensorStatus
+{
+  Presence,
+  Absence,
+  SensorNotAvailable,
+  Error
+}
