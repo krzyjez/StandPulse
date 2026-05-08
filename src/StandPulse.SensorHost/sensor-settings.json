@@ -1,4 +1,7 @@
 {
+  "source": {
+    "mode": "serial"
+  },
   "serial": {
     "portName": "COM4",
     "baudRate": 115200
@@ -6,9 +9,29 @@
   "presence": {
     "maxDistanceCm": 120,
     "stateChangeDelaySeconds": 10,
-    "sampleTimeoutSeconds": 5
+    "sampleTimeoutSeconds": 5,
+    "maxConsecutiveSensorErrors": 3
   },
   "pipe": {
     "name": "StandPulse.Sensor"
+  },
+  "fake": {
+    "intervalMilliseconds": 500,
+    "samples": [
+      {
+        "event": null,
+        "present": true,
+        "targetStatus": "StaticTarget",
+        "distanceCm": 64,
+        "repeat": 12
+      },
+      {
+        "event": null,
+        "present": false,
+        "targetStatus": "NoTarget",
+        "distanceCm": null,
+        "repeat": 12
+      }
+    ]
   }
 }

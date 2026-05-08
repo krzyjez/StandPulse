@@ -27,7 +27,9 @@ internal static class Program
     };
 
     Console.WriteLine("StandPulse.SensorHost");
-    Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
+    Console.WriteLine($"Source: {settings.Source.Mode}");
+    if (settings.Source.IsSerial)
+      Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
     Console.WriteLine($"Pipe: {settings.Pipe.Name}");
     Console.WriteLine("Naciśnij Ctrl+C, aby zakończyć.");
 
@@ -46,6 +48,7 @@ internal sealed class SensorHostService
 
   private readonly HostSettings _settings;
   private readonly SensorStateStore _store;
+  private int _consecutiveSensorErrors;
 
   public SensorHostService(HostSettings settings, SensorStateStore store)
   {
@@ -56,8 +59,8 @@ internal sealed class SensorHostService
   /// <summary>Uruchamia odczyt sensora, kontrolę timeoutu i serwer named pipe.</summary>
   public async Task RunAsync(CancellationToken cancellationToken)
   {
-    var serialTask = Task.Factory.StartNew(
-      () => _ReadSerialAsync(cancellationToken),
+    var sourceTask = Task.Factory.StartNew(
+      () => _ReadSamplesAsync(cancellationToken),
       cancellationToken,
       TaskCreationOptions.LongRunning,
       TaskScheduler.Default).Unwrap();
@@ -69,12 +72,20 @@ internal sealed class SensorHostService
 
     var tasks = new[]
     {
-      serialTask,
+      sourceTask,
       _WatchSampleTimeoutAsync(cancellationToken),
       pipeTask
     };
 
     await Task.WhenAll(tasks);
+  }
+
+  // Wybiera realny port COM albo fake źródło próbek.
+  private Task _ReadSamplesAsync(CancellationToken cancellationToken)
+  {
+    return _settings.Source.IsFake
+      ? _ReadFakeSamplesAsync(cancellationToken)
+      : _ReadSerialAsync(cancellationToken);
   }
 
   // Czyta JSON Lines z portu COM i przekazuje próbki do stabilizatora stanu.
@@ -124,10 +135,23 @@ internal sealed class SensorHostService
   {
     try
     {
+      var firmwareEvent = SensorFirmwareEvent.Parse(line);
+      if (firmwareEvent?.Event == "radar_read_error")
+      {
+        _consecutiveSensorErrors++;
+        Console.WriteLine($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
+
+        if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
+          _store.SetTechnicalStatus(SensorStatus.Error);
+
+        return;
+      }
+
       var sample = SensorSample.Parse(line);
       if (sample is null)
         return;
 
+      _consecutiveSensorErrors = 0;
       var presentAtDesk = sample.Present &&
                           sample.DistanceCm.HasValue &&
                           sample.DistanceCm.Value < _settings.Presence.MaxDistanceCm;
@@ -140,6 +164,50 @@ internal sealed class SensorHostService
     {
       Console.WriteLine($"Błąd parsowania próbki: {ex.Message}");
     }
+  }
+
+  // Generuje przewidywalne próbki bez fizycznego sensora.
+  private async Task _ReadFakeSamplesAsync(CancellationToken cancellationToken)
+  {
+    Console.WriteLine("Używam fake źródła próbek sensora.");
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+      foreach (var sample in _settings.Fake.Samples)
+      {
+        var repeat = Math.Max(1, sample.Repeat);
+        for (var i = 0; i < repeat; i++)
+        {
+          _HandleSensorLine(_CreateFakeLine(sample));
+          await Task.Delay(_settings.Fake.IntervalMilliseconds, cancellationToken);
+        }
+      }
+    }
+  }
+
+  // Tworzy linię JSON zgodną z firmware.
+  private static string _CreateFakeLine(FakeSensorSampleSettings sample)
+  {
+    if (!string.IsNullOrWhiteSpace(sample.Event))
+    {
+      return JsonSerializer.Serialize(
+        new
+        {
+          @event = sample.Event,
+          millis = Environment.TickCount64
+        },
+        CommandJsonOptions);
+    }
+
+    return JsonSerializer.Serialize(
+      new
+      {
+        present = sample.Present,
+        targetStatus = sample.TargetStatus,
+        distanceCm = sample.DistanceCm,
+        radarMode = 2
+      },
+      CommandJsonOptions);
   }
 
   // Ustawia stan techniczny, gdy sensor przestaje dostarczać aktualne próbki.
@@ -467,10 +535,27 @@ internal sealed record SensorSample(
   }
 }
 
+internal sealed record SensorFirmwareEvent(string Event)
+{
+  /// <summary>Parsuje zdarzenie techniczne z firmware sensora.</summary>
+  public static SensorFirmwareEvent? Parse(string line)
+  {
+    using var json = JsonDocument.Parse(line);
+    var root = json.RootElement;
+
+    if (!root.TryGetProperty("event", out var eventProperty))
+      return null;
+
+    return new SensorFirmwareEvent(eventProperty.GetString() ?? "");
+  }
+}
+
 internal sealed record HostSettings(
+  SensorSourceSettings Source,
   SerialSettings Serial,
   PresenceSettings Presence,
-  PipeSettings Pipe)
+  PipeSettings Pipe,
+  FakeSensorSettings Fake)
 {
   /// <summary>Wczytuje konfigurację hosta z pliku sensor-settings.json.</summary>
   public static HostSettings Load()
@@ -497,16 +582,23 @@ internal sealed record HostSettings(
   }
 
   private static HostSettings Default => new(
+    new SensorSourceSettings("serial"),
     new SerialSettings("COM4", 115200),
-    new PresenceSettings(120, 10, 5),
-    new PipeSettings("StandPulse.Sensor"));
+    new PresenceSettings(120, 10, 5, 3),
+    new PipeSettings("StandPulse.Sensor"),
+    FakeSensorSettings.Default);
 
   // Uzupełnia brakujące albo niepoprawne wartości konfiguracji.
   private HostSettings Normalize()
   {
+    var source = Source ?? Default.Source;
     var serial = Serial ?? Default.Serial;
     var presence = Presence ?? Default.Presence;
     var pipe = Pipe ?? Default.Pipe;
+    var fake = Fake ?? Default.Fake;
+
+    if (!source.IsSerial && !source.IsFake)
+      source = Default.Source;
 
     if (string.IsNullOrWhiteSpace(serial.PortName))
       serial = serial with { PortName = Default.Serial.PortName };
@@ -523,11 +615,26 @@ internal sealed record HostSettings(
     if (presence.SampleTimeoutSeconds <= 0)
       presence = presence with { SampleTimeoutSeconds = Default.Presence.SampleTimeoutSeconds };
 
+    if (presence.MaxConsecutiveSensorErrors <= 0)
+      presence = presence with { MaxConsecutiveSensorErrors = Default.Presence.MaxConsecutiveSensorErrors };
+
     if (string.IsNullOrWhiteSpace(pipe.Name))
       pipe = pipe with { Name = Default.Pipe.Name };
 
-    return new HostSettings(serial, presence, pipe);
+    if (fake.IntervalMilliseconds <= 0)
+      fake = fake with { IntervalMilliseconds = Default.Fake.IntervalMilliseconds };
+
+    if (fake.Samples is null || fake.Samples.Count == 0)
+      fake = fake with { Samples = Default.Fake.Samples };
+
+    return new HostSettings(source, serial, presence, pipe, fake);
   }
+}
+
+internal sealed record SensorSourceSettings(string Mode)
+{
+  public bool IsSerial => string.Equals(Mode, "serial", StringComparison.OrdinalIgnoreCase);
+  public bool IsFake => string.Equals(Mode, "fake", StringComparison.OrdinalIgnoreCase);
 }
 
 internal sealed record SerialSettings(
@@ -537,6 +644,26 @@ internal sealed record SerialSettings(
 internal sealed record PresenceSettings(
   int MaxDistanceCm,
   int StateChangeDelaySeconds,
-  int SampleTimeoutSeconds);
+  int SampleTimeoutSeconds,
+  int MaxConsecutiveSensorErrors);
 
 internal sealed record PipeSettings(string Name);
+
+internal sealed record FakeSensorSettings(
+  int IntervalMilliseconds,
+  List<FakeSensorSampleSettings> Samples)
+{
+  public static FakeSensorSettings Default => new(
+    500,
+    [
+      new FakeSensorSampleSettings(null, true, "StaticTarget", 64, 12),
+      new FakeSensorSampleSettings(null, false, "NoTarget", null, 12)
+    ]);
+}
+
+internal sealed record FakeSensorSampleSettings(
+  string? Event,
+  bool Present,
+  string TargetStatus,
+  int? DistanceCm,
+  int Repeat);
