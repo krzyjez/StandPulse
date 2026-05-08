@@ -15,6 +15,12 @@ internal static class Program
   {
     Console.OutputEncoding = Encoding.UTF8;
 
+    if (_IsDocCommand(args))
+    {
+      Console.WriteLine(_GetDocumentationPath());
+      return 0;
+    }
+
     if (!_ShouldRun(args))
     {
       _WriteHelp();
@@ -49,6 +55,18 @@ internal static class Program
     return args.Length == 1 && string.Equals(args[0], "run", StringComparison.OrdinalIgnoreCase);
   }
 
+  // Sprawdza, czy użytkownik pyta o ścieżkę dokumentacji obok exe.
+  private static bool _IsDocCommand(string[] args)
+  {
+    return args.Length == 1 && string.Equals(args[0], "doc", StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Zwraca ścieżkę do dokumentacji użytkowej obok opublikowanego programu.
+  private static string _GetDocumentationPath()
+  {
+    return Path.Combine(AppContext.BaseDirectory, "StandPulse.SensorHost.md");
+  }
+
   // Wypisuje pomoc CLI dla użytkownika i autostartu.
   private static void _WriteHelp()
   {
@@ -62,10 +80,12 @@ internal static class Program
     Console.WriteLine("  StandPulse.SensorHost.exe help");
     Console.WriteLine("  StandPulse.SensorHost.exe -help");
     Console.WriteLine("  StandPulse.SensorHost.exe --help");
+    Console.WriteLine("  StandPulse.SensorHost.exe doc");
     Console.WriteLine();
     Console.WriteLine("Komendy:");
     Console.WriteLine("  run    Uruchamia hosta sensora.");
     Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
+    Console.WriteLine("  doc    Wypisuje ścieżkę do dokumentacji Markdown obok programu.");
     Console.WriteLine();
     Console.WriteLine("Konfiguracja:");
     Console.WriteLine("  sensor-settings.json");

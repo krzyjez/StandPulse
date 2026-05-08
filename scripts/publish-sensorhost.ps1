@@ -20,7 +20,12 @@ if (-not $resolvedPublishDir.StartsWith($expectedPublishRoot, [System.StringComp
 }
 
 if (Test-Path -LiteralPath $resolvedPublishDir) {
-    Remove-Item -LiteralPath $resolvedPublishDir -Recurse -Force
+    Get-ChildItem -LiteralPath $resolvedPublishDir -File |
+        Where-Object { $_.Extension -in ".dll", ".exe", ".json", ".pdb" } |
+        Remove-Item -Force
+}
+else {
+    New-Item -ItemType Directory -Path $resolvedPublishDir | Out-Null
 }
 
 dotnet publish `

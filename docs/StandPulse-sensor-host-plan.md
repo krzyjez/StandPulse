@@ -105,7 +105,7 @@ Publikacja do klientów jest rzadsza i zależy od zmiany stabilnego statusu. Apl
 
 ## Użycie w innych aplikacjach
 
-Inne aplikacje korzystają z gotowego pliku klienta `docs/examples/standpulse-sensor-client.cs`.
+Inne aplikacje korzystają z gotowego pliku klienta `bin/StandPulse.SensorHost/examples/standpulse-sensor-client.cs`.
 
 Przepływ:
 
