@@ -1,21 +1,22 @@
 [features]
 codex_hooks = true
 
+# agent-signal-settings 1 2026-05-04
 [hooks]
 SessionStart = [
   { hooks = [
-    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+    { type = "command", command = "agent-signal hook", timeout = 10 }
   ] }
 ]
 
 UserPromptSubmit = [
   { hooks = [
-    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+    { type = "command", command = "agent-signal hook", timeout = 10 }
   ] }
 ]
 
 Stop = [
   { hooks = [
-    { type = "command", command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "p:\StandPulse\hooks\codex-hook-log.ps1"', timeout = 10 }
+    { type = "command", command = "agent-signal hook", timeout = 10 }
   ] }
 ]

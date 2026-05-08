@@ -1,0 +1,6 @@
+interface:
+  display_name: "review-code"
+  short_description: "Rygorystyczny code review zmian i fragmentów repozytorium."
+  default_prompt: "Use $review-code to review uncommitted changes, a selected path, or a specific code concern."
+policy:
+  allow_implicit_invocation: false
