@@ -11,9 +11,15 @@ namespace StandPulse.SensorHost;
 internal static class Program
 {
   /// <summary>Uruchamia host sensora i czeka na zakończenie procesu.</summary>
-  private static async Task Main()
+  private static async Task<int> Main(string[] args)
   {
     Console.OutputEncoding = Encoding.UTF8;
+
+    if (!_ShouldRun(args))
+    {
+      _WriteHelp();
+      return 0;
+    }
 
     var settings = HostSettings.Load();
     var store = new SensorStateStore();
@@ -34,6 +40,38 @@ internal static class Program
     Console.WriteLine("Naciśnij Ctrl+C, aby zakończyć.");
 
     await host.RunAsync(cancellation.Token);
+    return 0;
+  }
+
+  // Sprawdza, czy host ma przejść w tryb pracy ciągłej.
+  private static bool _ShouldRun(string[] args)
+  {
+    return args.Length == 1 && string.Equals(args[0], "run", StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Wypisuje pomoc CLI dla użytkownika i autostartu.
+  private static void _WriteHelp()
+  {
+    Console.WriteLine("StandPulse.SensorHost");
+    Console.WriteLine();
+    Console.WriteLine("Lokalny host sensora obecności StandPulse.");
+    Console.WriteLine("Czyta sensor przez COM, stabilizuje status obecności i udostępnia go lokalnym aplikacjom przez Windows Named Pipe.");
+    Console.WriteLine();
+    Console.WriteLine("Użycie:");
+    Console.WriteLine("  StandPulse.SensorHost.exe run");
+    Console.WriteLine("  StandPulse.SensorHost.exe help");
+    Console.WriteLine("  StandPulse.SensorHost.exe -help");
+    Console.WriteLine("  StandPulse.SensorHost.exe --help");
+    Console.WriteLine();
+    Console.WriteLine("Komendy:");
+    Console.WriteLine("  run    Uruchamia hosta sensora.");
+    Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
+    Console.WriteLine();
+    Console.WriteLine("Konfiguracja:");
+    Console.WriteLine("  sensor-settings.json");
+    Console.WriteLine();
+    Console.WriteLine("Domyślny pipe:");
+    Console.WriteLine("  StandPulse.Sensor");
   }
 }
 

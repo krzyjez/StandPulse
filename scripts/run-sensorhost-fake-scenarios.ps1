@@ -137,7 +137,7 @@ function Invoke-FakeScenario {
 
     $process = Start-Process `
         -FilePath "dotnet" `
-        -ArgumentList @($hostDllPath) `
+        -ArgumentList @($hostDllPath, "run") `
         -WorkingDirectory $repoRoot `
         -PassThru `
         -WindowStyle Hidden `
