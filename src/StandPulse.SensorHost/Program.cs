@@ -122,6 +122,7 @@ internal sealed class SensorHostService
   private readonly SensorStateStore _store;
   private readonly SensorDebugLogger? _debugLogger;
   private int _consecutiveSensorErrors;
+  private bool _receivedValidSensorMessage;
 
   public SensorHostService(HostSettings settings, SensorStateStore store, SensorDebugLogger? debugLogger)
   {
@@ -210,11 +211,18 @@ internal sealed class SensorHostService
     var line = rawLine.Trim();
     _WriteDebug($"RAW length={rawLine.Length} text=\"{_EscapeForLog(rawLine)}\" hex={_FormatCodeUnits(rawLine)}");
 
+    if (!_LooksLikeJson(line))
+    {
+      _WriteDebug($"LINE ignored=true reason=non-json-startup-noise source=\"{_EscapeForLog(line)}\"");
+      return;
+    }
+
     try
     {
       var firmwareEvent = SensorFirmwareEvent.Parse(line);
       if (firmwareEvent is not null)
       {
+        _receivedValidSensorMessage = true;
         _WriteDebug($"EVENT event={firmwareEvent.Event}");
         if (firmwareEvent.Event == "radar_read_error")
         {
@@ -241,6 +249,7 @@ internal sealed class SensorHostService
         return;
       }
 
+      _receivedValidSensorMessage = true;
       _consecutiveSensorErrors = 0;
       var presentAtDesk = sample.Present &&
                           sample.DistanceCm.HasValue &&
@@ -257,9 +266,18 @@ internal sealed class SensorHostService
     }
     catch (JsonException ex)
     {
-      _WriteOperationalLog($"Błąd parsowania próbki: {ex.Message}");
       _WriteDebug($"PARSE_ERROR message=\"{_EscapeForLog(ex.Message)}\" source=\"{_EscapeForLog(line)}\"");
+      if (_receivedValidSensorMessage)
+        _WriteOperationalLog($"Błąd parsowania próbki: {ex.Message}");
+      else
+        _WriteDebug("PARSE_ERROR ignored=true reason=before-first-valid-message");
     }
+  }
+
+  // Odróżnia właściwe linie JSON od boot-logu ESP32 i fragmentów złapanych przy starcie portu.
+  private static bool _LooksLikeJson(string line)
+  {
+    return line.StartsWith('{');
   }
 
   // Generuje przewidywalne próbki bez fizycznego sensora.
