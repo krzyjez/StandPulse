@@ -98,7 +98,8 @@ Najważniejsze ustawienia:
 5. `presence.stateChangeDelaySeconds` - minimalny czas utrzymania nowego stanu przed publikacją zmiany.
 6. `presence.sampleTimeoutSeconds` - czas bez poprawnej próbki po którym status przechodzi w `sensorNotAvailable`.
 7. `presence.maxConsecutiveSensorErrors` - liczba kolejnych błędów firmware po której status przechodzi w `error`.
-8. `pipe.name` - nazwa Windows Named Pipe, domyślnie `StandPulse.Sensor`.
+8. `presence.maxStartupInvalidLines` - liczba niepoprawnych linii przed pierwszą poprawną wiadomością, po której status przechodzi w `error`.
+9. `pipe.name` - nazwa Windows Named Pipe, domyślnie `StandPulse.Sensor`.
 
 ## Statusy
 
@@ -110,6 +111,8 @@ Host publikuje cztery statusy:
 4. `error` - host wykrył powtarzalny błąd firmware sensora.
 
 Pojedyncza błędna linia z COM jest logowana, ale nie zmienia publicznego statusu.
+
+Przed pierwszą poprawną wiadomością host ignoruje krótki szum startowy ESP32 i ucięte linie. Jeśli jednak liczba takich niepoprawnych linii osiągnie `presence.maxStartupInvalidLines`, host publikuje status `error`.
 
 ## Komunikacja
 

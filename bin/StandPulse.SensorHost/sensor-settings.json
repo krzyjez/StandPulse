@@ -10,7 +10,8 @@
     "maxDistanceCm": 120,
     "stateChangeDelaySeconds": 10,
     "sampleTimeoutSeconds": 5,
-    "maxConsecutiveSensorErrors": 3
+    "maxConsecutiveSensorErrors": 3,
+    "maxStartupInvalidLines": 20
   },
   "pipe": {
     "name": "StandPulse.Sensor"

@@ -122,6 +122,7 @@ internal sealed class SensorHostService
   private readonly SensorStateStore _store;
   private readonly SensorDebugLogger? _debugLogger;
   private int _consecutiveSensorErrors;
+  private int _startupInvalidLineCount;
   private bool _receivedValidSensorMessage;
 
   public SensorHostService(HostSettings settings, SensorStateStore store, SensorDebugLogger? debugLogger)
@@ -214,6 +215,7 @@ internal sealed class SensorHostService
     if (!_LooksLikeJson(line))
     {
       _WriteDebug($"LINE ignored=true reason=non-json-startup-noise source=\"{_EscapeForLog(line)}\"");
+      _RecordStartupInvalidLine("non-json-startup-noise");
       return;
     }
 
@@ -223,6 +225,7 @@ internal sealed class SensorHostService
       if (firmwareEvent is not null)
       {
         _receivedValidSensorMessage = true;
+        _startupInvalidLineCount = 0;
         _WriteDebug($"EVENT event={firmwareEvent.Event}");
         if (firmwareEvent.Event == "radar_read_error")
         {
@@ -250,6 +253,7 @@ internal sealed class SensorHostService
       }
 
       _receivedValidSensorMessage = true;
+      _startupInvalidLineCount = 0;
       _consecutiveSensorErrors = 0;
       var presentAtDesk = sample.Present &&
                           sample.DistanceCm.HasValue &&
@@ -270,7 +274,26 @@ internal sealed class SensorHostService
       if (_receivedValidSensorMessage)
         _WriteOperationalLog($"Błąd parsowania próbki: {ex.Message}");
       else
+      {
         _WriteDebug("PARSE_ERROR ignored=true reason=before-first-valid-message");
+        _RecordStartupInvalidLine("json-parse-error");
+      }
+    }
+  }
+
+  // Pilnuje, żeby nieskończone śmieci startowe sensora nie zostawiły hosta bez diagnozy.
+  private void _RecordStartupInvalidLine(string reason)
+  {
+    if (_receivedValidSensorMessage)
+      return;
+
+    _startupInvalidLineCount++;
+    _WriteDebug($"STARTUP_INVALID_LINE count={_startupInvalidLineCount} max={_settings.Presence.MaxStartupInvalidLines} reason={reason}");
+
+    if (_startupInvalidLineCount == _settings.Presence.MaxStartupInvalidLines)
+    {
+      _WriteOperationalLog($"Sensor wysyła niepoprawne dane startowe: {_startupInvalidLineCount}/{_settings.Presence.MaxStartupInvalidLines}");
+      _store.SetTechnicalStatus(SensorStatus.Error);
     }
   }
 
@@ -302,6 +325,9 @@ internal sealed class SensorHostService
   // Tworzy linię JSON zgodną z firmware.
   private static string _CreateFakeLine(FakeSensorSampleSettings sample)
   {
+    if (sample.RawLine is not null)
+      return sample.RawLine;
+
     if (!string.IsNullOrWhiteSpace(sample.Event))
     {
       return JsonSerializer.Serialize(
@@ -869,7 +895,7 @@ internal sealed record HostSettings(
   private static HostSettings Default => new(
     new SensorSourceSettings("serial"),
     new SerialSettings("COM4", 115200),
-    new PresenceSettings(120, 10, 5, 3),
+    new PresenceSettings(120, 10, 5, 3, 20),
     new PipeSettings("StandPulse.Sensor"),
     FakeSensorSettings.Default);
 
@@ -903,6 +929,9 @@ internal sealed record HostSettings(
     if (presence.MaxConsecutiveSensorErrors <= 0)
       presence = presence with { MaxConsecutiveSensorErrors = Default.Presence.MaxConsecutiveSensorErrors };
 
+    if (presence.MaxStartupInvalidLines <= 0)
+      presence = presence with { MaxStartupInvalidLines = Default.Presence.MaxStartupInvalidLines };
+
     if (string.IsNullOrWhiteSpace(pipe.Name))
       pipe = pipe with { Name = Default.Pipe.Name };
 
@@ -930,7 +959,8 @@ internal sealed record PresenceSettings(
   int MaxDistanceCm,
   int StateChangeDelaySeconds,
   int SampleTimeoutSeconds,
-  int MaxConsecutiveSensorErrors);
+  int MaxConsecutiveSensorErrors,
+  int MaxStartupInvalidLines);
 
 internal sealed record PipeSettings(string Name);
 
@@ -941,8 +971,8 @@ internal sealed record FakeSensorSettings(
   public static FakeSensorSettings Default => new(
     500,
     [
-      new FakeSensorSampleSettings(null, true, "StaticTarget", 64, 12),
-      new FakeSensorSampleSettings(null, false, "NoTarget", null, 12)
+      new FakeSensorSampleSettings(null, true, "StaticTarget", 64, 12, null),
+      new FakeSensorSampleSettings(null, false, "NoTarget", null, 12, null)
     ]);
 }
 
@@ -951,4 +981,5 @@ internal sealed record FakeSensorSampleSettings(
   bool Present,
   string TargetStatus,
   int? DistanceCm,
-  int Repeat);
+  int Repeat,
+  string? RawLine);

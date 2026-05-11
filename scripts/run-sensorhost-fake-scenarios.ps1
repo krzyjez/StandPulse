@@ -85,6 +85,7 @@ function New-FakeSettingsJson {
             stateChangeDelaySeconds = 1
             sampleTimeoutSeconds = 2
             maxConsecutiveSensorErrors = 3
+            maxStartupInvalidLines = 3
         }
         pipe = [ordered]@{
             name = $PipeName
@@ -215,6 +216,14 @@ $scenarios = @(
         MaxLines = 2
         Samples = @(
             [ordered]@{ event = "radar_read_error"; present = $false; targetStatus = "ErrorFrame"; distanceCm = $null; repeat = 3 }
+        )
+    },
+    @{
+        Name = "startup-garbage-becomes-error"
+        ExpectedSequence = @("error")
+        MaxLines = 2
+        Samples = @(
+            [ordered]@{ rawLine = "boot noise"; event = $null; present = $false; targetStatus = "StartupNoise"; distanceCm = $null; repeat = 3 }
         )
     }
 )
