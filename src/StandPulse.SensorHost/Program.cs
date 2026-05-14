@@ -436,7 +436,7 @@ internal sealed class SensorHostService
 
     var line = reader.ReadLine();
     var command = SensorCommand.Parse(line);
-    _WriteOperationalLog($"Pipe command: {command?.Command ?? "-"}");
+    _WriteOperationalLog($"{DateTimeOffset.Now:HH:mm:ss} pipe command={command?.Command ?? "-"}");
 
     if (command?.Command == "get")
     {
