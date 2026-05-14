@@ -1,3 +1,9 @@
+# 0.1.2 2026-05-14 11:39
+- Rozszerzono log stabilnych zmian SensorHost o dane ostatniej probki / Konsola pokazuje przyczyne przejscia w `presence` albo `absence` bez zalewania probkami
+- Dodano odczyt wersji projektu z `version.md` podczas kompilacji / Assembly version aplikacji odpowiada najnowszemu wpisowi changeloga
+- Pokazano wersje w naglowku SensorHost i w oknie ScannerViewer / Latwiej sprawdzic, jaki build jest aktualnie uruchomiony
+- Sprawdzono build SensorHost i fake scenariusze sensora / Zmiana logowania zachowuje dotychczasowa stabilizacje statusu
+
 # 0.1.1 2026-05-11 13:58
 - Dodano limit `presence.maxStartupInvalidLines` w SensorHost / Dlugotrwale smieci startowe sensora przechodza w publiczny status `error`
 - Rozszerzono obsluge niepoprawnych linii przed pierwsza probka / Krotki szum startowy nadal jest ignorowany, ale nie ukrywa trwalej awarii

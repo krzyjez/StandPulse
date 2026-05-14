@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.IO.Ports;
+using System.Reflection;
 using System.Text.Json;
 using System.Windows.Forms;
 
@@ -41,7 +42,7 @@ internal sealed class ScannerViewerForm : Form
 
     public ScannerViewerForm()
     {
-        Text = "StandPulse Scanner";
+        Text = $"StandPulse Scanner v{_GetProductVersion()}";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(700, 520);
         Size = new Size(790, 600);
@@ -81,15 +82,38 @@ internal sealed class ScannerViewerForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
+        var headerPanel = new TableLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0, 0, 0, 4),
+        };
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        headerPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        root.Controls.Add(headerPanel, 0, 0);
+
         var header = new Label
         {
             Text = "StandPulse Scanner",
             AutoSize = true,
             Font = new Font(Font.FontFamily, 22F, FontStyle.Bold),
             ForeColor = Color.FromArgb(24, 58, 82),
-            Margin = new Padding(0, 0, 0, 4),
+            Margin = new Padding(0),
         };
-        root.Controls.Add(header, 0, 0);
+        headerPanel.Controls.Add(header, 0, 0);
+
+        var versionLabel = new Label
+        {
+            Text = $"v{_GetProductVersion()}",
+            AutoSize = true,
+            Anchor = AnchorStyles.Right | AnchorStyles.Top,
+            Font = new Font(Font.FontFamily, 10F, FontStyle.Regular),
+            ForeColor = Color.FromArgb(91, 101, 111),
+            Margin = new Padding(12, 9, 0, 0),
+        };
+        headerPanel.Controls.Add(versionLabel, 1, 0);
 
         var toolbar = new FlowLayoutPanel
         {
@@ -256,6 +280,16 @@ internal sealed class ScannerViewerForm : Form
         });
         panel.Controls.Add(control);
         return panel;
+    }
+
+    // Pobiera wersję wpisaną do assembly podczas kompilacji.
+    private static string _GetProductVersion()
+    {
+        var version = Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+
+        return string.IsNullOrWhiteSpace(version) ? "-" : version;
     }
 
     private void AddMetric(TableLayoutPanel parent, int row, string label, Label valueLabel)

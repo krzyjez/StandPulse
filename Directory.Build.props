@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <_StandPulseVersionFile>$(MSBuildThisFileDirectory)version.md</_StandPulseVersionFile>
+    <_StandPulseVersionContent Condition="Exists('$(_StandPulseVersionFile)')">$([System.IO.File]::ReadAllText('$(_StandPulseVersionFile)'))</_StandPulseVersionContent>
+    <_StandPulseVersion Condition="'$(_StandPulseVersionContent)' != ''">$([System.Text.RegularExpressions.Regex]::Match('$(_StandPulseVersionContent)', '(?m)^#\s+([0-9]+\.[0-9]+\.[0-9]+)\s+').Groups[1].Value)</_StandPulseVersion>
+    <Version Condition="'$(_StandPulseVersion)' != ''">$(_StandPulseVersion)</Version>
+    <AssemblyVersion Condition="'$(_StandPulseVersion)' != ''">$(_StandPulseVersion).0</AssemblyVersion>
+    <FileVersion Condition="'$(_StandPulseVersion)' != ''">$(_StandPulseVersion).0</FileVersion>
+    <InformationalVersion Condition="'$(_StandPulseVersion)' != ''">$(_StandPulseVersion)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.IO.Ports;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -42,6 +43,7 @@ internal static class Program
     };
 
     Console.WriteLine("StandPulse.SensorHost");
+    Console.WriteLine($"Version: {_GetProductVersion()}");
     Console.WriteLine($"Mode: {(debugEnabled ? "debug" : "run")}");
     if (debugLogger is not null)
       Console.WriteLine($"Log: {debugLogger.Path}");
@@ -79,10 +81,21 @@ internal static class Program
     return Path.Combine(AppContext.BaseDirectory, "StandPulse.SensorHost.md");
   }
 
+  // Pobiera wersję wpisaną do assembly podczas kompilacji.
+  private static string _GetProductVersion()
+  {
+    var version = Assembly.GetExecutingAssembly()
+      .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+      ?.InformationalVersion;
+
+    return string.IsNullOrWhiteSpace(version) ? "-" : version;
+  }
+
   // Wypisuje pomoc CLI dla użytkownika i autostartu.
   private static void _WriteHelp()
   {
     Console.WriteLine("StandPulse.SensorHost");
+    Console.WriteLine($"Version: {_GetProductVersion()}");
     Console.WriteLine();
     Console.WriteLine("Lokalny host sensora obecności StandPulse.");
     Console.WriteLine("Czyta sensor przez COM, stabilizuje status obecności i udostępnia go lokalnym aplikacjom przez Windows Named Pipe.");
