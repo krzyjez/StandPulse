@@ -259,12 +259,19 @@ internal sealed class SensorHostService
                           sample.DistanceCm.HasValue &&
                           sample.DistanceCm.Value < _settings.Presence.MaxDistanceCm;
       var sampleStatus = presentAtDesk ? SensorStatus.Presence : SensorStatus.Absence;
+      var sampleDecision = new SensorSampleDecision(
+        sample.Present,
+        sample.TargetStatus,
+        sample.DistanceCm,
+        _settings.Presence.MaxDistanceCm,
+        sampleStatus);
 
       _WriteDebug(
         $"SAMPLE present={sample.Present} targetStatus={sample.TargetStatus} distanceCm={sample.DistanceCm?.ToString() ?? "-"} maxDistanceCm={_settings.Presence.MaxDistanceCm} decision={sampleStatus}");
 
       _store.RecordSample(
         sampleStatus,
+        sampleDecision,
         TimeSpan.FromSeconds(_settings.Presence.StateChangeDelaySeconds));
       _WriteDebug($"STATE {_FormatDebugState()}");
     }
@@ -601,9 +608,10 @@ internal sealed class SensorStateStore
   }
 
   /// <summary>Aktualizuje stabilny stan na podstawie poprawnej próbki sensora.</summary>
-  public void RecordSample(SensorStatus sampleStatus, TimeSpan stateChangeDelay)
+  public void RecordSample(SensorStatus sampleStatus, SensorSampleDecision sampleDecision, TimeSpan stateChangeDelay)
   {
     SensorSnapshot? changedSnapshot = null;
+    SensorSampleDecision? changedSampleDecision = null;
     var now = DateTimeOffset.Now;
 
     lock (_syncRoot)
@@ -629,10 +637,11 @@ internal sealed class SensorStateStore
 
       _snapshot = new SensorSnapshot(sampleStatus, _lastSampleAt, _candidateSince ?? now);
       changedSnapshot = _snapshot;
+      changedSampleDecision = sampleDecision;
     }
 
     if (changedSnapshot is not null)
-      _Publish(changedSnapshot);
+      _Publish(changedSnapshot, changedSampleDecision);
   }
 
   /// <summary>Ustawia stan techniczny hosta, gdy nie wynika on z normalnej próbki sensora.</summary>
@@ -682,7 +691,7 @@ internal sealed class SensorStateStore
   }
 
   // Rozsyła snapshot do aktywnych subskrybentów.
-  private void _Publish(SensorSnapshot snapshot)
+  private void _Publish(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision = null)
   {
     foreach (var (id, writer) in _subscriptions)
     {
@@ -690,11 +699,21 @@ internal sealed class SensorStateStore
         _subscriptions.TryRemove(id, out _);
     }
 
-    var message = $"{snapshot.StableSince:HH:mm:ss} status={snapshot.Status}";
+    var message = _FormatStatusLog(snapshot, sampleDecision);
     if (_writeLog is not null)
       _writeLog(message);
     else
       Console.WriteLine(message);
+  }
+
+  // Składa krótki wpis konsoli dla stabilnej zmiany statusu.
+  private static string _FormatStatusLog(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision)
+  {
+    var message = $"{snapshot.StableSince:HH:mm:ss} status={snapshot.Status}";
+    if (sampleDecision is null)
+      return message;
+
+    return $"{message} present={sampleDecision.Present} targetStatus={sampleDecision.TargetStatus} distanceCm={sampleDecision.DistanceCm?.ToString() ?? "-"} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
   }
 
   internal sealed class SensorSubscription : IDisposable
@@ -808,6 +827,13 @@ internal sealed record SensorDebugState(
   SensorSnapshot Snapshot,
   SensorStatus? CandidateStatus,
   DateTimeOffset? CandidateSince);
+
+internal sealed record SensorSampleDecision(
+  bool Present,
+  string TargetStatus,
+  int? DistanceCm,
+  int MaxDistanceCm,
+  SensorStatus Decision);
 
 internal enum SensorStatus
 {
