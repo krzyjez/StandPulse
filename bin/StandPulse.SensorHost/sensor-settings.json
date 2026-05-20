@@ -7,7 +7,7 @@
     "baudRate": 115200
   },
   "presence": {
-    "maxDistanceCm": 120,
+    "maxDistanceCm": 200,
     "stateChangeDelaySeconds": 10,
     "sampleTimeoutSeconds": 5,
     "maxConsecutiveSensorErrors": 3,
