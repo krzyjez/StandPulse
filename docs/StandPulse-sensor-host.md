@@ -113,6 +113,24 @@ Najważniejsze ustawienia:
 7. `presence.maxConsecutiveSensorErrors` - liczba kolejnych błędów firmware po której status przechodzi w `error`.
 8. `presence.maxStartupInvalidLines` - liczba niepoprawnych linii przed pierwszą poprawną wiadomością, po której status przechodzi w `error`.
 9. `pipe.name` - nazwa Windows Named Pipe.
+10. `shelly.enabled` - włącza automatyczne sterowanie Shelly Plug S.
+11. `shelly.mode` - tryb komunikacji, obecnie `cloud`.
+12. `shelly.serverUri` - adres serwera Shelly Cloud z aplikacji Shelly.
+13. `shelly.deviceId` - identyfikator urządzenia Shelly bez dwukropków.
+14. `shelly.authKeyEnvironmentVariable` - nazwa zmiennej środowiskowej z kluczem Cloud API.
+
+Integracja Shelly działa według reguły:
+
+```text
+sensor presence + odblokowana sesja Windows -> Shelly ON
+sensor absence/sensorNotAvailable/error albo zablokowana sesja Windows -> Shelly OFF
+```
+
+Klucz Cloud API nie powinien być zapisywany w `sensor-settings.json`. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
+
+```powershell
+[Environment]::SetEnvironmentVariable("STANDPULSE_SHELLY_AUTH_KEY", "<auth_key>", "User")
+```
 
 ## Interpretacja obecności
 

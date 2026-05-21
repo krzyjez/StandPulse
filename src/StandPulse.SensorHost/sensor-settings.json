@@ -16,6 +16,16 @@
   "pipe": {
     "name": "StandPulse.Sensor"
   },
+  "shelly": {
+    "enabled": true,
+    "mode": "cloud",
+    "serverUri": "https://shelly-258-eu.shelly.cloud",
+    "deviceId": "d885ac1745e4",
+    "authKeyEnvironmentVariable": "STANDPULSE_SHELLY_AUTH_KEY",
+    "channel": 0,
+    "commandTimeoutSeconds": 10,
+    "retryCount": 2
+  },
   "fake": {
     "intervalMilliseconds": 500,
     "samples": [

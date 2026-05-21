@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
 using System.IO.Ports;
+using System.Runtime.InteropServices;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -32,6 +33,7 @@ internal static class Program
     var settings = HostSettings.Load();
     using var debugLogger = debugEnabled ? SensorDebugLogger.Create() : null;
     Action<string>? writeLog = debugLogger is null ? null : debugLogger.WriteLine;
+    using var shellyShutdownGuard = ShellyShutdownGuard.Create(settings.Shelly, writeLog ?? Console.WriteLine);
     var store = new SensorStateStore(writeLog);
     var host = new SensorHostService(settings, store, debugLogger);
     using var cancellation = new CancellationTokenSource();
@@ -159,14 +161,22 @@ internal sealed class SensorHostService
       TaskCreationOptions.LongRunning,
       TaskScheduler.Default);
 
-    var tasks = new[]
+    var tasks = new List<Task>
     {
       sourceTask,
       _WatchSampleTimeoutAsync(cancellationToken),
-      pipeTask
+      pipeTask,
+      _RunShellyAutomationAsync(cancellationToken)
     };
 
     await Task.WhenAll(tasks);
+  }
+
+  // Uruchamia automatykę Shelly niezależnie od odczytu sensora i serwera pipe.
+  private Task _RunShellyAutomationAsync(CancellationToken cancellationToken)
+  {
+    var automation = new ShellyAutomationService(_settings.Shelly, _store, _WriteOperationalLog);
+    return automation.RunAsync(cancellationToken);
   }
 
   // Wybiera realny port COM albo fake źródło próbek.
@@ -580,6 +590,246 @@ internal sealed class SensorHostService
   }
 }
 
+internal sealed class ShellyAutomationService
+{
+  private readonly ShellySettings _settings;
+  private readonly SensorStateStore _store;
+  private readonly Action<string> _writeLog;
+
+  /// <summary>Tworzy automatykę zasilania Shelly sterowaną statusem sensora i sesji Windows.</summary>
+  public ShellyAutomationService(ShellySettings settings, SensorStateStore store, Action<string> writeLog)
+  {
+    _settings = settings;
+    _store = store;
+    _writeLog = writeLog;
+  }
+
+  /// <summary>Monitoruje status sensora oraz blokadę sesji Windows i wysyła komendy do Shelly Cloud.</summary>
+  public async Task RunAsync(CancellationToken cancellationToken)
+  {
+    if (!_settings.Enabled)
+      return;
+
+    if (!string.Equals(_settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
+    {
+      _writeLog($"Shelly pominięty: nieobsługiwany tryb '{_settings.Mode}'.");
+      return;
+    }
+
+    var authKey = Environment.GetEnvironmentVariable(_settings.AuthKeyEnvironmentVariable);
+    if (string.IsNullOrWhiteSpace(authKey))
+    {
+      _writeLog($"Shelly pominięty: brak zmiennej środowiskowej {_settings.AuthKeyEnvironmentVariable}.");
+      return;
+    }
+
+    if (!Uri.TryCreate(_settings.ServerUri, UriKind.Absolute, out var serverUri))
+    {
+      _writeLog($"Shelly pominięty: niepoprawny serverUri '{_settings.ServerUri}'.");
+      return;
+    }
+
+    using var httpClient = new HttpClient
+    {
+      BaseAddress = serverUri,
+      Timeout = TimeSpan.FromSeconds(_settings.CommandTimeoutSeconds)
+    };
+    var client = new ShellyCloudClient(_settings, authKey, httpClient, _writeLog);
+    using var subscription = _store.Subscribe();
+    using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+
+    var snapshot = _store.GetSnapshot();
+    bool? lastAppliedOutput = null;
+    _writeLog("Shelly Cloud: automatyka uruchomiona.");
+
+    try
+    {
+      lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, cancellationToken);
+
+      while (await timer.WaitForNextTickAsync(cancellationToken))
+      {
+        while (subscription.Reader.TryRead(out var changedSnapshot))
+          snapshot = changedSnapshot;
+
+        lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, cancellationToken);
+      }
+    }
+    finally
+    {
+      if (cancellationToken.IsCancellationRequested)
+        await client.SetOutputAsync(false, CancellationToken.None);
+    }
+  }
+
+  // Wylicza oczekiwany stan gniazdka i wysyła komendę tylko, gdy jest potrzebna.
+  private async Task<bool?> _ApplyDecisionAsync(
+    ShellyCloudClient client,
+    SensorSnapshot snapshot,
+    bool? lastAppliedOutput,
+    CancellationToken cancellationToken)
+  {
+    var sessionStatus = WindowsSessionProbe.GetStatus();
+    var desiredOutput = snapshot.Status == SensorStatus.Presence && sessionStatus == WindowsSessionStatus.Active;
+
+    if (lastAppliedOutput == desiredOutput)
+      return lastAppliedOutput;
+
+    var succeeded = await client.SetOutputAsync(desiredOutput, cancellationToken);
+    if (succeeded)
+      lastAppliedOutput = desiredOutput;
+
+    _writeLog($"Shelly decision sensor={snapshot.Status} session={sessionStatus} output={(desiredOutput ? "on" : "off")} success={succeeded}");
+    return lastAppliedOutput;
+  }
+}
+
+internal sealed class ShellyCloudClient
+{
+  private readonly ShellySettings _settings;
+  private readonly string _authKey;
+  private readonly HttpClient _httpClient;
+  private readonly Action<string> _writeLog;
+
+  /// <summary>Tworzy klienta Shelly Cloud dla jednego urządzenia Plug S.</summary>
+  public ShellyCloudClient(ShellySettings settings, string authKey, HttpClient httpClient, Action<string> writeLog)
+  {
+    _settings = settings;
+    _authKey = authKey;
+    _httpClient = httpClient;
+    _writeLog = writeLog;
+  }
+
+  /// <summary>Ustawia wyjście gniazdka na ON albo OFF przez Shelly Cloud API.</summary>
+  public async Task<bool> SetOutputAsync(bool output, CancellationToken cancellationToken)
+  {
+    var turn = output ? "on" : "off";
+
+    for (var attempt = 1; attempt <= _settings.RetryCount + 1; attempt++)
+    {
+      try
+      {
+        using var content = new FormUrlEncodedContent(
+        [
+          new KeyValuePair<string, string>("id", _settings.DeviceId),
+          new KeyValuePair<string, string>("auth_key", _authKey),
+          new KeyValuePair<string, string>("channel", _settings.Channel.ToString()),
+          new KeyValuePair<string, string>("turn", turn)
+        ]);
+
+        using var response = await _httpClient.PostAsync("/device/relay/control", content, cancellationToken);
+        if (response.IsSuccessStatusCode)
+          return true;
+
+        _writeLog($"Shelly Cloud: HTTP {(int)response.StatusCode} przy turn={turn}, próba {attempt}.");
+      }
+      catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+      {
+        throw;
+      }
+      catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+      {
+        _writeLog($"Shelly Cloud: błąd przy turn={turn}, próba {attempt}: {ex.Message}");
+      }
+
+      if (attempt <= _settings.RetryCount)
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+    }
+
+    return false;
+  }
+}
+
+internal sealed class ShellyShutdownGuard : IDisposable
+{
+  private readonly ShellyCloudClient _client;
+  private readonly Action<string> _writeLog;
+  private bool _isDisposed;
+
+  // Przechowuje klienta używanego tylko podczas kończenia procesu.
+  private ShellyShutdownGuard(ShellyCloudClient client, Action<string> writeLog)
+  {
+    _client = client;
+    _writeLog = writeLog;
+    AppDomain.CurrentDomain.ProcessExit += _HandleProcessExit;
+  }
+
+  /// <summary>Tworzy strażnika, który przy kończeniu procesu próbuje wyłączyć Shelly.</summary>
+  public static ShellyShutdownGuard? Create(ShellySettings settings, Action<string> writeLog)
+  {
+    if (!settings.Enabled || !string.Equals(settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
+      return null;
+
+    var authKey = Environment.GetEnvironmentVariable(settings.AuthKeyEnvironmentVariable);
+    if (string.IsNullOrWhiteSpace(authKey))
+      return null;
+
+    if (!Uri.TryCreate(settings.ServerUri, UriKind.Absolute, out var serverUri))
+      return null;
+
+    var httpClient = new HttpClient
+    {
+      BaseAddress = serverUri,
+      Timeout = TimeSpan.FromSeconds(settings.CommandTimeoutSeconds)
+    };
+    var client = new ShellyCloudClient(settings, authKey, httpClient, writeLog);
+    return new ShellyShutdownGuard(client, writeLog);
+  }
+
+  /// <summary>Odpina handler kończenia procesu.</summary>
+  public void Dispose()
+  {
+    if (_isDisposed)
+      return;
+
+    AppDomain.CurrentDomain.ProcessExit -= _HandleProcessExit;
+    _isDisposed = true;
+  }
+
+  // Wysyła bezpieczne OFF podczas wylogowania, restartu albo zamykania procesu.
+  private void _HandleProcessExit(object? sender, EventArgs args)
+  {
+    try
+    {
+      _client.SetOutputAsync(false, CancellationToken.None).GetAwaiter().GetResult();
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+    {
+      _writeLog($"Shelly Cloud: nie udało się wyłączyć przy kończeniu procesu: {ex.Message}");
+    }
+  }
+}
+
+internal static class WindowsSessionProbe
+{
+  private const uint DesktopSwitchDesktop = 0x0100;
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern bool SwitchDesktop(IntPtr hDesktop);
+
+  [DllImport("user32.dll", SetLastError = true)]
+  private static extern bool CloseDesktop(IntPtr hDesktop);
+
+  /// <summary>Sprawdza, czy bieżąca sesja Windows jest odblokowana i nadaje się do pracy użytkownika.</summary>
+  public static WindowsSessionStatus GetStatus()
+  {
+    var desktop = OpenInputDesktop(0, false, DesktopSwitchDesktop);
+    if (desktop == IntPtr.Zero)
+      return WindowsSessionStatus.Unknown;
+
+    try
+    {
+      return SwitchDesktop(desktop) ? WindowsSessionStatus.Active : WindowsSessionStatus.Locked;
+    }
+    finally
+    {
+      CloseDesktop(desktop);
+    }
+  }
+}
+
 internal sealed class SensorStateStore
 {
   private readonly object _syncRoot = new();
@@ -856,6 +1106,13 @@ internal enum SensorStatus
   Error
 }
 
+internal enum WindowsSessionStatus
+{
+  Active,
+  Locked,
+  Unknown
+}
+
 internal sealed record SensorSample(
   bool Present,
   string TargetStatus,
@@ -905,7 +1162,8 @@ internal sealed record HostSettings(
   SerialSettings Serial,
   PresenceSettings Presence,
   PipeSettings Pipe,
-  FakeSensorSettings Fake)
+  FakeSensorSettings Fake,
+  ShellySettings Shelly)
 {
   /// <summary>Wczytuje konfigurację hosta z pliku sensor-settings.json.</summary>
   public static HostSettings Load()
@@ -936,7 +1194,8 @@ internal sealed record HostSettings(
     new SerialSettings("COM4", 115200),
     new PresenceSettings(120, 10, 5, 3, 20),
     new PipeSettings("StandPulse.Sensor"),
-    FakeSensorSettings.Default);
+    FakeSensorSettings.Default,
+    new ShellySettings(false, "cloud", "", "", "STANDPULSE_SHELLY_AUTH_KEY", 0, 10, 2));
 
   // Uzupełnia brakujące albo niepoprawne wartości konfiguracji.
   private HostSettings Normalize()
@@ -946,6 +1205,7 @@ internal sealed record HostSettings(
     var presence = Presence ?? Default.Presence;
     var pipe = Pipe ?? Default.Pipe;
     var fake = Fake ?? Default.Fake;
+    var shelly = Shelly ?? Default.Shelly;
 
     if (!source.IsSerial && !source.IsFake)
       source = Default.Source;
@@ -980,7 +1240,22 @@ internal sealed record HostSettings(
     if (fake.Samples is null || fake.Samples.Count == 0)
       fake = fake with { Samples = Default.Fake.Samples };
 
-    return new HostSettings(source, serial, presence, pipe, fake);
+    if (string.IsNullOrWhiteSpace(shelly.Mode))
+      shelly = shelly with { Mode = Default.Shelly.Mode };
+
+    if (string.IsNullOrWhiteSpace(shelly.AuthKeyEnvironmentVariable))
+      shelly = shelly with { AuthKeyEnvironmentVariable = Default.Shelly.AuthKeyEnvironmentVariable };
+
+    if (shelly.Channel < 0)
+      shelly = shelly with { Channel = Default.Shelly.Channel };
+
+    if (shelly.CommandTimeoutSeconds <= 0)
+      shelly = shelly with { CommandTimeoutSeconds = Default.Shelly.CommandTimeoutSeconds };
+
+    if (shelly.RetryCount < 0)
+      shelly = shelly with { RetryCount = Default.Shelly.RetryCount };
+
+    return new HostSettings(source, serial, presence, pipe, fake, shelly);
   }
 }
 
@@ -1022,3 +1297,13 @@ internal sealed record FakeSensorSampleSettings(
   int? DistanceCm,
   int Repeat,
   string? RawLine);
+
+internal sealed record ShellySettings(
+  bool Enabled,
+  string Mode,
+  string ServerUri,
+  string DeviceId,
+  string AuthKeyEnvironmentVariable,
+  int Channel,
+  int CommandTimeoutSeconds,
+  int RetryCount);
