@@ -14,7 +14,7 @@ Host jest jedynym właścicielem portu COM w normalnym modelu pracy. Inne aplika
 mmWave sensor -> XIAO -> USB serial / COM -> StandPulse.SensorHost -> named pipe -> aplikacje klienckie
 ```
 
-Firmware wysyła do komputera JSON Lines. Host czyta próbki, interpretuje je według konfiguracji, stabilizuje status i publikuje tylko domenowy stan obecności.
+Firmware wysyła do komputera JSON Lines. Host czyta próbki, interpretuje je według konfiguracji, stabilizuje status sensora i publikuje go razem ze statusem sesji Windows oraz efektywną obecnością roboczą.
 
 ## Projekty i pliki
 
@@ -192,8 +192,14 @@ Pobranie aktualnego statusu:
 Przykładowa odpowiedź:
 
 ```json
-{"type":"status","status":"presence","lastSampleAt":"2026-05-07T18:40:00.123+02:00","stableSince":"2026-05-07T18:39:50.000+02:00"}
+{"type":"status","status":"presence","sensorStatus":"presence","sessionStatus":"active","workPresence":true,"lastSampleAt":"2026-05-07T18:40:00.123+02:00","stableSince":"2026-05-07T18:39:50.000+02:00"}
 ```
+
+Pole `status` jest zgodnościowym aliasem `sensorStatus`. Nowe aplikacje powinny czytać:
+
+1. `sensorStatus` - stabilny stan sensora: `presence`, `absence`, `sensorNotAvailable`, `error`.
+2. `sessionStatus` - stan sesji Windows: `active`, `locked`, `unknown`.
+3. `workPresence` - efektywna obecność robocza używana przez automatykę Shelly.
 
 Subskrypcja zmian:
 
@@ -201,7 +207,7 @@ Subskrypcja zmian:
 {"command":"watch"}
 ```
 
-W trybie `watch` host wysyła aktualny snapshot po przyjęciu subskrypcji, a potem wysyła kolejne linie tylko po zmianie stabilnego statusu. Zmiana samego `lastSampleAt` nie tworzy zdarzenia.
+W trybie `watch` host wysyła aktualny snapshot po przyjęciu subskrypcji, a potem wysyła kolejne linie po zmianie stabilnego statusu sensora albo statusu sesji Windows. Zmiana samego `lastSampleAt` nie tworzy zdarzenia.
 
 ## Fake sensor
 

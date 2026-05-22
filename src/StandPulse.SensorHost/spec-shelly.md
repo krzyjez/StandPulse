@@ -81,6 +81,8 @@ Dla zdarzen konczenia sesji Windows opoznienie nie jest stosowane. `StandPulse.S
 
 Tylko `active` pozwala wlaczyc Shelly. Pozostale stany wymuszaja `work presence = false`.
 
+Status sesji jest publikowany przez named pipe jako `sessionStatus`. Snapshot pipe zawiera tez `sensorStatus` oraz wyliczone `workPresence`, zeby aplikacje klienckie mogly rozroznic fizyczna obecnosc od blokady Windows.
+
 ## Tryb reczny
 
 System obsluguje reczne nadpisanie decyzji automatyki.

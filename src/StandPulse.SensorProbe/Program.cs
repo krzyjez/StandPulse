@@ -90,7 +90,7 @@ internal static class Program
   private static void _WriteSnapshot(SensorSnapshot snapshot)
   {
     var lastSample = snapshot.LastSampleAt?.ToString("O") ?? "-";
-    Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} status={snapshot.Status} lastSampleAt={lastSample} stableSince={snapshot.StableSince:O}");
+    Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} sensorStatus={snapshot.SensorStatus} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} lastSampleAt={lastSample} stableSince={snapshot.StableSince:O}");
   }
 }
 
@@ -168,6 +168,9 @@ internal sealed class SensorPipeClient
 internal sealed record SensorSnapshot(
   string Type,
   SensorStatus Status,
+  SensorStatus SensorStatus,
+  WindowsSessionStatus SessionStatus,
+  bool WorkPresence,
   DateTimeOffset? LastSampleAt,
   DateTimeOffset StableSince);
 
@@ -177,6 +180,13 @@ internal enum SensorStatus
   Absence,
   SensorNotAvailable,
   Error
+}
+
+internal enum WindowsSessionStatus
+{
+  Active,
+  Locked,
+  Unknown
 }
 
 internal sealed record ProbeOptions(

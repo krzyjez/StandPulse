@@ -173,6 +173,7 @@ internal sealed class SensorHostService
     {
       sourceTask,
       _WatchSampleTimeoutAsync(cancellationToken),
+      _WatchWindowsSessionAsync(cancellationToken),
       pipeTask,
       _RunShellyAutomationAsync(cancellationToken)
     };
@@ -396,6 +397,16 @@ internal sealed class SensorHostService
 
     while (await timer.WaitForNextTickAsync(cancellationToken))
       _store.MarkUnavailableIfSampleExpired(timeout);
+  }
+
+  // Odświeża stan sesji Windows i publikuje lock/unlock przez pipe.
+  private async Task _WatchWindowsSessionAsync(CancellationToken cancellationToken)
+  {
+    using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+
+    _store.RecordSessionStatus(WindowsSessionProbe.GetStatus());
+    while (await timer.WaitForNextTickAsync(cancellationToken))
+      _store.RecordSessionStatus(WindowsSessionProbe.GetStatus());
   }
 
   // Przyjmuje klientów named pipe w przewidywalnej pętli blokującej.
@@ -683,7 +694,7 @@ internal sealed class ShellyAutomationService
     bool verifyRealState,
     CancellationToken cancellationToken)
   {
-    var sessionStatus = WindowsSessionProbe.GetStatus();
+    var sessionStatus = snapshot.SessionStatus;
     var desiredOutput = snapshot.Status == SensorStatus.Presence && sessionStatus == WindowsSessionStatus.Active;
     var reason = lastAppliedOutput is null ? "startup" : "state-change";
 
@@ -909,31 +920,44 @@ internal sealed class ShellyShutdownGuard : IDisposable
 
 internal static class WindowsSessionProbe
 {
-  private const uint DesktopSwitchDesktop = 0x0100;
+  private static readonly IntPtr WtsCurrentServerHandle = IntPtr.Zero;
 
-  [DllImport("user32.dll", SetLastError = true)]
-  private static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
+  private const uint WtsCurrentSession = 0xFFFFFFFF;
+  private const int WtsSessionInfoEx = 25;
+  private const int SessionFlagsOffset = 16;
+  private const int WtsSessionStateLock = 0;
+  private const int WtsSessionStateUnlock = 1;
 
-  [DllImport("user32.dll", SetLastError = true)]
-  private static extern bool SwitchDesktop(IntPtr hDesktop);
+  [DllImport("wtsapi32.dll", SetLastError = true)]
+  private static extern bool WTSQuerySessionInformation(
+    IntPtr hServer,
+    uint sessionId,
+    int wtsInfoClass,
+    out IntPtr ppBuffer,
+    out uint pBytesReturned);
 
-  [DllImport("user32.dll", SetLastError = true)]
-  private static extern bool CloseDesktop(IntPtr hDesktop);
+  [DllImport("wtsapi32.dll")]
+  private static extern void WTSFreeMemory(IntPtr pointer);
 
   /// <summary>Sprawdza, czy bieżąca sesja Windows jest odblokowana i nadaje się do pracy użytkownika.</summary>
   public static WindowsSessionStatus GetStatus()
   {
-    var desktop = OpenInputDesktop(0, false, DesktopSwitchDesktop);
-    if (desktop == IntPtr.Zero)
+    if (!WTSQuerySessionInformation(WtsCurrentServerHandle, WtsCurrentSession, WtsSessionInfoEx, out var buffer, out _))
       return WindowsSessionStatus.Unknown;
 
     try
     {
-      return SwitchDesktop(desktop) ? WindowsSessionStatus.Active : WindowsSessionStatus.Locked;
+      var flags = Marshal.ReadInt32(buffer, SessionFlagsOffset);
+      return flags switch
+      {
+        WtsSessionStateUnlock => WindowsSessionStatus.Active,
+        WtsSessionStateLock => WindowsSessionStatus.Locked,
+        _ => WindowsSessionStatus.Unknown
+      };
     }
     finally
     {
-      CloseDesktop(desktop);
+      WTSFreeMemory(buffer);
     }
   }
 }
@@ -944,7 +968,7 @@ internal sealed class SensorStateStore
   private readonly ConcurrentDictionary<Guid, ChannelWriter<SensorSnapshot>> _subscriptions = new();
   private readonly Action<string>? _writeLog;
 
-  private SensorSnapshot _snapshot = new(SensorStatus.SensorNotAvailable, null, DateTimeOffset.Now);
+  private SensorSnapshot _snapshot = new(SensorStatus.SensorNotAvailable, WindowsSessionStatus.Unknown, null, DateTimeOffset.Now);
   private SensorStatus? _candidateStatus;
   private DateTimeOffset? _candidateSince;
   private DateTimeOffset? _lastSampleAt;
@@ -1006,7 +1030,12 @@ internal sealed class SensorStateStore
         return;
       }
 
-      _snapshot = new SensorSnapshot(sampleStatus, _lastSampleAt, _candidateSince ?? now);
+      _snapshot = _snapshot with
+      {
+        Status = sampleStatus,
+        LastSampleAt = _lastSampleAt,
+        StableSince = _candidateSince ?? now
+      };
       changedSnapshot = _snapshot;
       changedSampleDecision = sampleDecision;
     }
@@ -1032,12 +1061,35 @@ internal sealed class SensorStateStore
       if (_snapshot.Status == status)
         return;
 
-      _snapshot = new SensorSnapshot(status, _lastSampleAt, now);
+      _snapshot = _snapshot with
+      {
+        Status = status,
+        LastSampleAt = _lastSampleAt,
+        StableSince = now
+      };
       changedSnapshot = _snapshot;
     }
 
     if (changedSnapshot is not null)
       _Publish(changedSnapshot);
+  }
+
+  /// <summary>Aktualizuje stan sesji Windows publikowany razem ze statusem sensora.</summary>
+  public void RecordSessionStatus(WindowsSessionStatus status)
+  {
+    SensorSnapshot? changedSnapshot = null;
+
+    lock (_syncRoot)
+    {
+      if (_snapshot.SessionStatus == status)
+        return;
+
+      _snapshot = _snapshot with { SessionStatus = status };
+      changedSnapshot = _snapshot;
+    }
+
+    if (changedSnapshot is not null)
+      _Publish(changedSnapshot, null, $"Windows session status={status} workPresence={changedSnapshot.WorkPresence}");
   }
 
   /// <summary>Oznacza sensor jako niedostępny, jeśli ostatnia próbka jest zbyt stara.</summary>
@@ -1062,7 +1114,7 @@ internal sealed class SensorStateStore
   }
 
   // Rozsyła snapshot do aktywnych subskrybentów.
-  private void _Publish(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision = null)
+  private void _Publish(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision = null, string? message = null)
   {
     foreach (var (id, writer) in _subscriptions)
     {
@@ -1070,7 +1122,7 @@ internal sealed class SensorStateStore
         _subscriptions.TryRemove(id, out _);
     }
 
-    var message = _FormatStatusLog(snapshot, sampleDecision);
+    message ??= _FormatStatusLog(snapshot, sampleDecision);
     if (_writeLog is not null)
       _writeLog(message);
     else
@@ -1080,7 +1132,7 @@ internal sealed class SensorStateStore
   // Składa krótki wpis konsoli dla stabilnej zmiany statusu.
   private static string _FormatStatusLog(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision)
   {
-    var message = $"{snapshot.StableSince:HH:mm:ss} status={snapshot.Status}";
+    var message = $"{snapshot.StableSince:HH:mm:ss} sensorStatus={snapshot.Status} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence}";
     if (sampleDecision is null)
       return message;
 
@@ -1168,13 +1220,21 @@ internal sealed class SensorHostLogger : IDisposable
 internal sealed record SensorSnapshot(
   [property: JsonPropertyOrder(1)]
   SensorStatus Status,
-  [property: JsonPropertyOrder(2)]
-  DateTimeOffset? LastSampleAt,
   [property: JsonPropertyOrder(3)]
+  WindowsSessionStatus SessionStatus,
+  [property: JsonPropertyOrder(5)]
+  DateTimeOffset? LastSampleAt,
+  [property: JsonPropertyOrder(6)]
   DateTimeOffset StableSince)
 {
   [JsonPropertyOrder(0)]
   public string Type => "status";
+
+  [JsonPropertyOrder(2)]
+  public SensorStatus SensorStatus => Status;
+
+  [JsonPropertyOrder(4)]
+  public bool WorkPresence => Status == SensorStatus.Presence && SessionStatus == WindowsSessionStatus.Active;
 }
 
 internal sealed record SensorDebugState(

@@ -97,6 +97,9 @@ public sealed class StandPulseSensorClient
 public sealed record StandPulseSensorSnapshot(
   string Type,
   StandPulseSensorStatus Status,
+  StandPulseSensorStatus SensorStatus,
+  StandPulseWindowsSessionStatus SessionStatus,
+  bool WorkPresence,
   DateTimeOffset? LastSampleAt,
   DateTimeOffset StableSince);
 
@@ -107,4 +110,12 @@ public enum StandPulseSensorStatus
   Absence,
   SensorNotAvailable,
   Error
+}
+
+/// <summary>Status sesji Windows publikowany razem ze statusem sensora.</summary>
+public enum StandPulseWindowsSessionStatus
+{
+  Active,
+  Locked,
+  Unknown
 }
