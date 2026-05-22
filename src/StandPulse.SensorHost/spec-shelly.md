@@ -121,7 +121,8 @@ Konfiguracja zawiera co najmniej:
 5. nazwe zmiennej srodowiskowej z kluczem Cloud API,
 6. kanal przekaznika,
 7. timeout komendy,
-8. liczbe ponowien.
+8. liczbe ponowien,
+9. interwal weryfikacji realnego stanu przekaznika.
 
 ## Odpornosc na bledy
 
@@ -129,7 +130,7 @@ Nieudana komenda do Shelly jest logowana i ponawiana zgodnie z konfiguracja.
 
 Host nie blokuje odczytu sensora ani serwera named pipe podczas komunikacji z Shelly.
 
-Po odzyskaniu komunikacji host porownuje oczekiwany stan z ostatnim znanym stanem Shelly i wysyla brakujaca komende, jezeli stan urzadzenia rozni sie od decyzji systemu.
+Po odzyskaniu komunikacji host porownuje oczekiwany stan z realnym `switch:0.output` Shelly i wysyla brakujaca komende, jezeli stan urzadzenia rozni sie od decyzji systemu.
 
 ## Zakres poza dokumentem
 

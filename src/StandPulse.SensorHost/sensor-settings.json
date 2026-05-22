@@ -24,7 +24,8 @@
     "authKeyEnvironmentVariable": "STANDPULSE_SHELLY_AUTH_KEY",
     "channel": 0,
     "commandTimeoutSeconds": 10,
-    "retryCount": 2
+    "retryCount": 2,
+    "stateCheckIntervalSeconds": 30
   },
   "fake": {
     "intervalMilliseconds": 500,

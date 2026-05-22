@@ -56,19 +56,23 @@ Host uruchamia się komendą:
 StandPulse.SensorHost.exe run
 ```
 
-Tryb diagnostyczny działa jak `run`, ale zapisuje surowe linie z sensora oraz decyzje interpretacji do pliku logu:
+Tryb diagnostyczny działa jak `run`, ale zapisuje zdarzenia operacyjne hosta do pliku logu:
 
 ```powershell
 StandPulse.SensorHost.exe debug
 ```
 
-Po starcie program wypisuje na konsoli ścieżkę bieżącego logu. Pliki logów są tworzone w:
+Tryb śledzenia działa jak `debug`, ale dodatkowo zapisuje surowe linie i próbki sensora. Używaj go tylko do krótkiej diagnostyki:
 
-```text
-%LOCALAPPDATA%\StandPulse\SensorHost\logs
+```powershell
+StandPulse.SensorHost.exe trace
 ```
 
-Pojedynczy plik logu ma limit 100 KB. Po dojściu do limitu host działa dalej, ale bieżące logowanie debug zostaje wyłączone dla tego uruchomienia.
+Po starcie program wypisuje na konsoli ścieżkę logu. Jeden log operacyjny jest zapisywany w:
+
+```text
+%LOCALAPPDATA%\StandPulse\SensorHost\logs\sensorhost.log
+```
 
 Bez argumentów oraz dla `help`, `-help` i `--help` program pokazuje pomoc.
 
@@ -121,6 +125,7 @@ Najważniejsze ustawienia:
 15. `shelly.channel` - kanał przekaźnika Shelly, dla Plug S Gen3 domyślnie `0`.
 16. `shelly.commandTimeoutSeconds` - limit czasu pojedynczej komendy do Shelly Cloud.
 17. `shelly.retryCount` - liczba ponowień po nieudanej komendzie.
+18. `shelly.stateCheckIntervalSeconds` - odstęp między weryfikacjami realnego stanu przekaźnika Shelly.
 
 Integracja Shelly działa według reguły:
 
@@ -129,7 +134,7 @@ sensor presence + odblokowana sesja Windows -> Shelly ON
 sensor absence/sensorNotAvailable/error albo zablokowana sesja Windows -> Shelly OFF
 ```
 
-Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę Shelly i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF`.
+Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę Shelly i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Host okresowo odczytuje realny stan `switch:0.output` i koryguje gniazdko, jeżeli różni się ono od decyzji systemu. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF`.
 
 Klucz Cloud API nie powinien być zapisywany w `sensor-settings.json`. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
 
@@ -237,7 +242,7 @@ Instalacja user-level dodająca hosta do autostartu oraz katalogi `bin` do user 
 .\scripts\install-sensorhost-user.ps1
 ```
 
-Autostart używa trybu `debug`, żeby po zalogowaniu host zapisywał surowe linie z sensora i wynik interpretacji do pliku logu.
+Autostart używa trybu `debug`, żeby po zalogowaniu host zapisywał zdarzenia operacyjne, zmiany statusu i komendy Shelly do jednego logu. Surowe próbki sensora zapisuje tylko ręcznie uruchomiony tryb `trace`.
 
 Skrypt publikuje hosta do:
 

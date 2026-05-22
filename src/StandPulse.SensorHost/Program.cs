@@ -24,18 +24,19 @@ internal static class Program
     }
 
     var debugEnabled = _IsDebugCommand(args);
-    if (!_ShouldRun(args) && !debugEnabled)
+    var traceEnabled = _IsTraceCommand(args);
+    if (!_ShouldRun(args) && !debugEnabled && !traceEnabled)
     {
       _WriteHelp();
       return 0;
     }
 
     var settings = HostSettings.Load();
-    using var debugLogger = debugEnabled ? SensorDebugLogger.Create() : null;
-    Action<string>? writeLog = debugLogger is null ? null : debugLogger.WriteLine;
-    using var shellyShutdownGuard = ShellyShutdownGuard.Create(settings.Shelly, writeLog ?? Console.WriteLine);
+    using var logger = SensorHostLogger.Create(traceEnabled);
+    Action<string> writeLog = logger.WriteLine;
+    using var shellyShutdownGuard = ShellyShutdownGuard.Create(settings.Shelly, writeLog);
     var store = new SensorStateStore(writeLog);
-    var host = new SensorHostService(settings, store, debugLogger);
+    var host = new SensorHostService(settings, store, logger);
     using var cancellation = new CancellationTokenSource();
 
     Console.CancelKeyPress += (_, args) =>
@@ -46,9 +47,8 @@ internal static class Program
 
     Console.WriteLine("StandPulse.SensorHost");
     Console.WriteLine($"Version: {_GetProductVersion()}");
-    Console.WriteLine($"Mode: {(debugEnabled ? "debug" : "run")}");
-    if (debugLogger is not null)
-      Console.WriteLine($"Log: {debugLogger.Path}");
+    Console.WriteLine($"Mode: {(traceEnabled ? "trace" : debugEnabled ? "debug" : "run")}");
+    Console.WriteLine($"Log: {logger.Path}");
     Console.WriteLine($"Source: {settings.Source.Mode}");
     if (settings.Source.IsSerial)
       Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
@@ -69,6 +69,12 @@ internal static class Program
   private static bool _IsDebugCommand(string[] args)
   {
     return args.Length == 1 && string.Equals(args[0], "debug", StringComparison.OrdinalIgnoreCase);
+  }
+
+  // Sprawdza, czy host ma zapisywac surowe probki sensora do logu.
+  private static bool _IsTraceCommand(string[] args)
+  {
+    return args.Length == 1 && string.Equals(args[0], "trace", StringComparison.OrdinalIgnoreCase);
   }
 
   // Sprawdza, czy użytkownik pyta o ścieżkę dokumentacji obok exe.
@@ -105,6 +111,7 @@ internal static class Program
     Console.WriteLine("Użycie:");
     Console.WriteLine("  StandPulse.SensorHost.exe run");
     Console.WriteLine("  StandPulse.SensorHost.exe debug");
+    Console.WriteLine("  StandPulse.SensorHost.exe trace");
     Console.WriteLine("  StandPulse.SensorHost.exe help");
     Console.WriteLine("  StandPulse.SensorHost.exe -help");
     Console.WriteLine("  StandPulse.SensorHost.exe --help");
@@ -112,7 +119,8 @@ internal static class Program
     Console.WriteLine();
     Console.WriteLine("Komendy:");
     Console.WriteLine("  run    Uruchamia hosta sensora.");
-    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem surowych linii i decyzji interpretacji do pliku.");
+    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem operacyjnym do pliku.");
+    Console.WriteLine("  trace  Uruchamia hosta sensora z dodatkowym logowaniem surowych linii i probek.");
     Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
     Console.WriteLine("  doc    Wypisuje ścieżkę do dokumentacji Markdown obok programu.");
     Console.WriteLine();
@@ -135,16 +143,16 @@ internal sealed class SensorHostService
 
   private readonly HostSettings _settings;
   private readonly SensorStateStore _store;
-  private readonly SensorDebugLogger? _debugLogger;
+  private readonly SensorHostLogger _logger;
   private int _consecutiveSensorErrors;
   private int _startupInvalidLineCount;
   private bool _receivedValidSensorMessage;
 
-  public SensorHostService(HostSettings settings, SensorStateStore store, SensorDebugLogger? debugLogger)
+  public SensorHostService(HostSettings settings, SensorStateStore store, SensorHostLogger logger)
   {
     _settings = settings;
     _store = store;
-    _debugLogger = debugLogger;
+    _logger = logger;
   }
 
   /// <summary>Uruchamia odczyt sensora, kontrolę timeoutu i serwer named pipe.</summary>
@@ -505,16 +513,15 @@ internal sealed class SensorHostService
   // Wypisuje linię diagnostyczną tylko w trybie debug.
   private void _WriteDebug(string message)
   {
-    _debugLogger?.WriteLine($"DEBUG {message}");
+    if (_logger.TraceEnabled)
+      _logger.WriteLine($"TRACE {message}");
   }
 
-  // Kieruje zwykłe komunikaty hosta na konsolę albo do pliku w trybie debug.
+  // Kieruje zwykle komunikaty hosta do jednego logu operacyjnego i na konsole.
   private void _WriteOperationalLog(string message)
   {
-    if (_debugLogger is not null)
-      _debugLogger.WriteLine(message);
-    else
-      Console.WriteLine(message);
+    _logger.WriteLine(message);
+    Console.WriteLine(message);
   }
 
   // Formatuje snapshot i kandydata stabilizacji do krótkiego logu debug.
@@ -616,7 +623,7 @@ internal sealed class ShellyAutomationService
       return;
     }
 
-    var authKey = Environment.GetEnvironmentVariable(_settings.AuthKeyEnvironmentVariable);
+    var authKey = ShellyAuthKeyReader.GetValue(_settings.AuthKeyEnvironmentVariable);
     if (string.IsNullOrWhiteSpace(authKey))
     {
       _writeLog($"Shelly pominięty: brak zmiennej środowiskowej {_settings.AuthKeyEnvironmentVariable}.");
@@ -640,18 +647,25 @@ internal sealed class ShellyAutomationService
 
     var snapshot = _store.GetSnapshot();
     bool? lastAppliedOutput = null;
+    var stateCheckInterval = TimeSpan.FromSeconds(_settings.StateCheckIntervalSeconds);
+    var nextStateCheckAt = DateTimeOffset.Now + stateCheckInterval;
     _writeLog("Shelly Cloud: automatyka uruchomiona.");
 
     try
     {
-      lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, cancellationToken);
+      lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, false, cancellationToken);
 
       while (await timer.WaitForNextTickAsync(cancellationToken))
       {
         while (subscription.Reader.TryRead(out var changedSnapshot))
           snapshot = changedSnapshot;
 
-        lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, cancellationToken);
+        var now = DateTimeOffset.Now;
+        var shouldVerifyState = now >= nextStateCheckAt;
+        lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, shouldVerifyState, cancellationToken);
+
+        if (shouldVerifyState)
+          nextStateCheckAt = now + stateCheckInterval;
       }
     }
     finally
@@ -666,19 +680,34 @@ internal sealed class ShellyAutomationService
     ShellyCloudClient client,
     SensorSnapshot snapshot,
     bool? lastAppliedOutput,
+    bool verifyRealState,
     CancellationToken cancellationToken)
   {
     var sessionStatus = WindowsSessionProbe.GetStatus();
     var desiredOutput = snapshot.Status == SensorStatus.Presence && sessionStatus == WindowsSessionStatus.Active;
+    var reason = lastAppliedOutput is null ? "startup" : "state-change";
 
     if (lastAppliedOutput == desiredOutput)
-      return lastAppliedOutput;
+    {
+      if (!verifyRealState)
+        return lastAppliedOutput;
+
+      var actualOutput = await client.GetOutputAsync(cancellationToken);
+      if (!actualOutput.HasValue)
+        return lastAppliedOutput;
+
+      if (actualOutput.Value == desiredOutput)
+        return lastAppliedOutput;
+
+      reason = "drift";
+      _writeLog($"Shelly drift sensor={snapshot.Status} session={sessionStatus} desired={(desiredOutput ? "on" : "off")} actual={(actualOutput.Value ? "on" : "off")}");
+    }
 
     var succeeded = await client.SetOutputAsync(desiredOutput, cancellationToken);
     if (succeeded)
       lastAppliedOutput = desiredOutput;
 
-    _writeLog($"Shelly decision sensor={snapshot.Status} session={sessionStatus} output={(desiredOutput ? "on" : "off")} success={succeeded}");
+    _writeLog($"Shelly command sensor={snapshot.Status} session={sessionStatus} output={(desiredOutput ? "on" : "off")} reason={reason} success={succeeded}");
     return lastAppliedOutput;
   }
 }
@@ -737,6 +766,85 @@ internal sealed class ShellyCloudClient
 
     return false;
   }
+
+  /// <summary>Odczytuje realny stan przekaźnika Shelly Cloud dla skonfigurowanego kanału.</summary>
+  public async Task<bool?> GetOutputAsync(CancellationToken cancellationToken)
+  {
+    for (var attempt = 1; attempt <= _settings.RetryCount + 1; attempt++)
+    {
+      try
+      {
+        using var content = new FormUrlEncodedContent(
+        [
+          new KeyValuePair<string, string>("id", _settings.DeviceId),
+          new KeyValuePair<string, string>("auth_key", _authKey)
+        ]);
+
+        using var response = await _httpClient.PostAsync("/device/status", content, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+          _writeLog($"Shelly Cloud: HTTP {(int)response.StatusCode} przy status, próba {attempt}.");
+        }
+        else
+        {
+          await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+          using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+          if (_TryReadOutput(document.RootElement, out var output))
+            return output;
+
+          _writeLog($"Shelly Cloud: brak switch:{_settings.Channel}.output w statusie, próba {attempt}.");
+        }
+      }
+      catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+      {
+        throw;
+      }
+      catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+      {
+        _writeLog($"Shelly Cloud: błąd przy status, próba {attempt}: {ex.Message}");
+      }
+
+      if (attempt <= _settings.RetryCount)
+        await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+    }
+
+    return null;
+  }
+
+  // Wyciąga output z odpowiedzi Shelly Cloud device/status.
+  private bool _TryReadOutput(JsonElement root, out bool output)
+  {
+    output = false;
+    var switchName = $"switch:{_settings.Channel}";
+
+    if (!root.TryGetProperty("data", out var data) ||
+        !data.TryGetProperty("device_status", out var deviceStatus) ||
+        !deviceStatus.TryGetProperty(switchName, out var switchStatus) ||
+        !switchStatus.TryGetProperty("output", out var outputElement) ||
+        outputElement.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+      return false;
+
+    output = outputElement.GetBoolean();
+    return true;
+  }
+}
+
+internal static class ShellyAuthKeyReader
+{
+  /// <summary>Pobiera klucz Shelly z procesu, profilu uzytkownika albo konfiguracji maszyny.</summary>
+  public static string? GetValue(string variableName)
+  {
+    var processValue = Environment.GetEnvironmentVariable(variableName);
+    if (!string.IsNullOrWhiteSpace(processValue))
+      return processValue;
+
+    var userValue = Environment.GetEnvironmentVariable(variableName, EnvironmentVariableTarget.User);
+    if (!string.IsNullOrWhiteSpace(userValue))
+      return userValue;
+
+    var machineValue = Environment.GetEnvironmentVariable(variableName, EnvironmentVariableTarget.Machine);
+    return string.IsNullOrWhiteSpace(machineValue) ? null : machineValue;
+  }
 }
 
 internal sealed class ShellyShutdownGuard : IDisposable
@@ -759,7 +867,7 @@ internal sealed class ShellyShutdownGuard : IDisposable
     if (!settings.Enabled || !string.Equals(settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
       return null;
 
-    var authKey = Environment.GetEnvironmentVariable(settings.AuthKeyEnvironmentVariable);
+    var authKey = ShellyAuthKeyReader.GetValue(settings.AuthKeyEnvironmentVariable);
     if (string.IsNullOrWhiteSpace(authKey))
       return null;
 
@@ -1001,26 +1109,25 @@ internal sealed class SensorStateStore
   }
 }
 
-internal sealed class SensorDebugLogger : IDisposable
+internal sealed class SensorHostLogger : IDisposable
 {
-  private const long MaxLogBytes = 100 * 1024;
-
   private readonly object _syncRoot = new();
   private readonly StreamWriter _writer;
-  private long _writtenBytes;
-  private bool _isDisabled;
 
-  // Zachowuje otwarty plik logu dla jednego uruchomienia debug.
-  private SensorDebugLogger(string path, StreamWriter writer)
+  // Zachowuje otwarty plik logu operacyjnego dla procesu hosta.
+  private SensorHostLogger(string path, StreamWriter writer, bool traceEnabled)
   {
     Path = path;
     _writer = writer;
+    TraceEnabled = traceEnabled;
   }
 
   public string Path { get; }
 
-  /// <summary>Tworzy plik diagnostyczny dla bieżącego uruchomienia hosta.</summary>
-  public static SensorDebugLogger Create()
+  public bool TraceEnabled { get; }
+
+  /// <summary>Tworzy albo otwiera pojedynczy log operacyjny hosta.</summary>
+  public static SensorHostLogger Create(bool traceEnabled)
   {
     var directory = System.IO.Path.Combine(
       Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -1029,15 +1136,14 @@ internal sealed class SensorDebugLogger : IDisposable
       "logs");
     Directory.CreateDirectory(directory);
 
-    var path = System.IO.Path.Combine(directory, $"sensorhost-{DateTimeOffset.Now:yyyyMMdd-HHmmss}.log");
-    var writer = new StreamWriter(path, append: false, new UTF8Encoding(false))
+    var path = System.IO.Path.Combine(directory, "sensorhost.log");
+    var writer = new StreamWriter(path, append: true, new UTF8Encoding(false))
     {
       AutoFlush = true
     };
 
-    var logger = new SensorDebugLogger(path, writer);
-    logger.WriteLine("Debug log started.");
-    logger.WriteLine($"Debug log limit: {MaxLogBytes} bytes.");
+    var logger = new SensorHostLogger(path, writer, traceEnabled);
+    logger.WriteLine($"Host log started trace={traceEnabled}.");
     return logger;
   }
 
@@ -1046,23 +1152,8 @@ internal sealed class SensorDebugLogger : IDisposable
   {
     lock (_syncRoot)
     {
-      if (_isDisabled)
-        return;
-
       var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}";
-      var bytes = Encoding.UTF8.GetByteCount(line) + Environment.NewLine.Length;
-
-      if (_writtenBytes + bytes > MaxLogBytes)
-      {
-        var stopLine = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} Debug log stopped after reaching {MaxLogBytes} bytes.";
-        _writer.WriteLine(stopLine);
-        _writtenBytes += Encoding.UTF8.GetByteCount(stopLine) + Environment.NewLine.Length;
-        _isDisabled = true;
-        return;
-      }
-
       _writer.WriteLine(line);
-      _writtenBytes += bytes;
     }
   }
 
@@ -1195,7 +1286,7 @@ internal sealed record HostSettings(
     new PresenceSettings(120, 10, 5, 3, 20),
     new PipeSettings("StandPulse.Sensor"),
     FakeSensorSettings.Default,
-    new ShellySettings(false, "cloud", "", "", "STANDPULSE_SHELLY_AUTH_KEY", 0, 10, 2));
+    new ShellySettings(false, "cloud", "", "", "STANDPULSE_SHELLY_AUTH_KEY", 0, 10, 2, 30));
 
   // Uzupełnia brakujące albo niepoprawne wartości konfiguracji.
   private HostSettings Normalize()
@@ -1255,6 +1346,9 @@ internal sealed record HostSettings(
     if (shelly.RetryCount < 0)
       shelly = shelly with { RetryCount = Default.Shelly.RetryCount };
 
+    if (shelly.StateCheckIntervalSeconds <= 0)
+      shelly = shelly with { StateCheckIntervalSeconds = Default.Shelly.StateCheckIntervalSeconds };
+
     return new HostSettings(source, serial, presence, pipe, fake, shelly);
   }
 }
@@ -1306,4 +1400,5 @@ internal sealed record ShellySettings(
   string AuthKeyEnvironmentVariable,
   int Channel,
   int CommandTimeoutSeconds,
-  int RetryCount);
+  int RetryCount,
+  int StateCheckIntervalSeconds);
