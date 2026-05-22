@@ -105,6 +105,9 @@ Najważniejsze ustawienia:
 12. `shelly.serverUri` - adres serwera Shelly Cloud z aplikacji Shelly.
 13. `shelly.deviceId` - identyfikator urządzenia Shelly bez dwukropków.
 14. `shelly.authKeyEnvironmentVariable` - nazwa zmiennej środowiskowej z kluczem Cloud API.
+15. `shelly.channel` - kanał przekaźnika Shelly, dla Plug S Gen3 domyślnie `0`.
+16. `shelly.commandTimeoutSeconds` - limit czasu pojedynczej komendy do Shelly Cloud.
+17. `shelly.retryCount` - liczba ponowień po nieudanej komendzie.
 
 Sterowanie Shelly działa według reguły:
 
@@ -112,6 +115,8 @@ Sterowanie Shelly działa według reguły:
 sensor presence + odblokowana sesja Windows -> Shelly ON
 sensor absence/sensorNotAvailable/error albo zablokowana sesja Windows -> Shelly OFF
 ```
+
+Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę Shelly i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF`.
 
 Klucz Cloud API nie powinien być zapisywany w `sensor-settings.json`. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
 

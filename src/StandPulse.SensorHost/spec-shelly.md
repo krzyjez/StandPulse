@@ -11,6 +11,19 @@ Robocza obecnosc laczy dwa warunki:
 
 Gniazdko jest wlaczone tylko wtedy, gdy oba warunki sa spelnione. W pozostalych stanach system dazy do wylaczenia gniazdka.
 
+## Zakres obecnej implementacji
+
+Aktywny zakres produkcyjny obejmuje MVP (Minimum Viable Product):
+
+1. komunikacje przez Shelly Cloud,
+2. konfiguracje `shelly` w `sensor-settings.json`,
+3. klucz Cloud API pobierany ze zmiennej srodowiskowej,
+4. automatyczne `ON` dla `presence` i aktywnej sesji Windows,
+5. automatyczne `OFF` dla `absence`, `sensorNotAvailable`, `error`, zablokowanej sesji Windows i konczenia procesu,
+6. timeout i ponowienia komend Shelly.
+
+Pozostale sekcje tego dokumentu opisuja pelny model sterowania. Elementy takie jak tryb reczny, publikowanie stanu Shelly w named pipe, niezalezne opoznienie wylaczenia i porownywanie z ostatnim znanym stanem Shelly nie sa aktywne w MVP.
+
 ## Wlasciciel logiki
 
 Sterowanie Shelly jest czescia `StandPulse.SensorHost`, a nie osobna aplikacja i nie `StandPulse.ScannerViewer`.
@@ -51,7 +64,9 @@ Wylaczenie jest bezpiecznym stanem domyslnym. Blad sensora, brak probek, blad od
 
 Status sensora korzysta z istniejacej stabilizacji `presence.stateChangeDelaySeconds`.
 
-Dla wylaczenia zasilania system uzywa dodatkowego opoznienia, niezaleznego od stabilizacji sensora. Opoznienie chroni przed chwilowymi zanikami obecnosci, krotkim zablokowaniem sesji albo przejsciowym brakiem probek.
+W MVP wylaczenie wynikajace z `absence` korzysta z tej samej stabilizacji co publiczny status sensora. System nie ma osobnego `offDelaySeconds`.
+
+Blokada sesji Windows jest sprawdzana cyklicznie przez automatyke Shelly i prowadzi do proby wylaczenia przy najblizszym przebiegu petli. Dodatkowe opoznienie dla blokady sesji nie jest stosowane.
 
 Dla zdarzen konczenia sesji Windows opoznienie nie jest stosowane. `StandPulse.SensorHost` od razu probuje wylaczyc Shelly przed zakonczeniem procesu.
 
@@ -100,11 +115,13 @@ Warstwa komunikacji z Shelly jest odseparowana od logiki decyzji. Logika decyzji
 Konfiguracja zawiera co najmniej:
 
 1. wlaczenie lub wylaczenie integracji Shelly,
-2. adres urzadzenia,
-3. timeout komendy,
-4. liczbe ponowien,
-5. opoznienie wylaczenia,
-6. tryb reczny po starcie procesu.
+2. tryb komunikacji `cloud`,
+3. adres serwera Shelly Cloud,
+4. identyfikator urzadzenia,
+5. nazwe zmiennej srodowiskowej z kluczem Cloud API,
+6. kanal przekaznika,
+7. timeout komendy,
+8. liczbe ponowien.
 
 ## Odpornosc na bledy
 
