@@ -46,16 +46,16 @@ internal static class Program
       cancellation.Cancel();
     };
 
-    Console.WriteLine("StandPulse.SensorHost");
-    Console.WriteLine($"Version: {_GetProductVersion()}");
-    Console.WriteLine($"Mode: {(traceEnabled ? "trace" : debugEnabled ? "debug" : "run")}");
-    Console.WriteLine($"Log: {logger.Path}");
-    Console.WriteLine($"Source: {settings.Source.Mode}");
+    _WriteConsoleLog("StandPulse.SensorHost");
+    _WriteConsoleLog($"Version: {_GetProductVersion()}");
+    _WriteConsoleLog($"Mode: {(traceEnabled ? "trace" : debugEnabled ? "debug" : "run")}");
+    _WriteConsoleLog($"Log: {logger.Path}");
+    _WriteConsoleLog($"Source: {settings.Source.Mode}");
     if (settings.Source.IsSerial)
-      Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
-    Console.WriteLine($"Pipe: {settings.Pipe.Name}");
-    Console.WriteLine($"Effectors: {effectors.Count}");
-    Console.WriteLine("Naciśnij Ctrl+C, aby zakończyć.");
+      _WriteConsoleLog($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
+    _WriteConsoleLog($"Pipe: {settings.Pipe.Name}");
+    _WriteConsoleLog($"Effectors: {effectors.Count}");
+    _WriteConsoleLog("Naciśnij Ctrl+C, aby zakończyć.");
 
     await host.RunAsync(cancellation.Token);
     return 0;
@@ -99,6 +99,12 @@ internal static class Program
       ?.InformationalVersion;
 
     return string.IsNullOrWhiteSpace(version) ? "-" : version;
+  }
+
+  // Wypisuje log konsolowy w takim samym formacie czasu jak plik hosta.
+  private static void _WriteConsoleLog(string message)
+  {
+    Console.WriteLine(SensorHostLogger.FormatLine(message));
   }
 
   // Wypisuje pomoc CLI dla użytkownika i autostartu.
@@ -214,7 +220,7 @@ internal sealed class SensorHostService
         };
 
         serialPort.Open();
-        Console.WriteLine($"Połączono z {_settings.Serial.PortName}.");
+        _WriteOperationalLog($"Połączono z {_settings.Serial.PortName}.");
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -469,7 +475,7 @@ internal sealed class SensorHostService
 
     var line = reader.ReadLine();
     var command = SensorCommand.Parse(line);
-    _WriteOperationalLog($"{DateTimeOffset.Now:HH:mm:ss} pipe command={command?.Command ?? "-"}");
+    _WriteOperationalLog($"pipe command={command?.Command ?? "-"}");
 
     if (command?.Command == "get")
     {
@@ -536,7 +542,7 @@ internal sealed class SensorHostService
   private void _WriteOperationalLog(string message)
   {
     _logger.WriteLine(message);
-    Console.WriteLine(message);
+    Console.WriteLine(SensorHostLogger.FormatLine(message));
   }
 
   // Formatuje snapshot i kandydata stabilizacji do krótkiego logu debug.
@@ -1290,13 +1296,13 @@ internal sealed class SensorStateStore
     if (_writeLog is not null)
       _writeLog(message);
     else
-      Console.WriteLine(message);
+      Console.WriteLine(SensorHostLogger.FormatLine(message));
   }
 
   // Składa krótki wpis konsoli dla stabilnej zmiany statusu.
   private static string _FormatStatusLog(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision)
   {
-    var message = $"{snapshot.StableSince:HH:mm:ss} sensorStatus={snapshot.Status} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence}";
+    var message = $"sensorStatus={snapshot.Status} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} stableSince={snapshot.StableSince:HH:mm:ss}";
     if (sampleDecision is null)
       return message;
 
@@ -1367,10 +1373,13 @@ internal sealed class SensorHostLogger : IDisposable
   public void WriteLine(string message)
   {
     lock (_syncRoot)
-    {
-      var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}";
-      _writer.WriteLine(line);
-    }
+      _writer.WriteLine(FormatLine(message));
+  }
+
+  /// <summary>Formatuje linię logu hosta z krótką sygnaturą czasu.</summary>
+  public static string FormatLine(string message)
+  {
+    return $"{DateTimeOffset.Now:HH:mm:ss} {message}";
   }
 
   /// <summary>Zamyka plik logu po zakończeniu procesu.</summary>
