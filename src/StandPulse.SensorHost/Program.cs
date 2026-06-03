@@ -34,9 +34,10 @@ internal static class Program
     var settings = HostSettings.Load();
     using var logger = SensorHostLogger.Create(traceEnabled);
     Action<string> writeLog = logger.WriteLine;
-    using var shellyShutdownGuard = ShellyShutdownGuard.Create(settings.Shelly, writeLog);
+    var effectors = EffectorDefinition.LoadAll(settings.Effectors.Directory, writeLog);
+    using var effectorShutdownGuard = EffectorShutdownGuard.Create(effectors, writeLog);
     var store = new SensorStateStore(writeLog);
-    var host = new SensorHostService(settings, store, logger);
+    var host = new SensorHostService(settings, effectors, store, logger);
     using var cancellation = new CancellationTokenSource();
 
     Console.CancelKeyPress += (_, args) =>
@@ -53,6 +54,7 @@ internal static class Program
     if (settings.Source.IsSerial)
       Console.WriteLine($"Serial: {settings.Serial.PortName} @ {settings.Serial.BaudRate}");
     Console.WriteLine($"Pipe: {settings.Pipe.Name}");
+    Console.WriteLine($"Effectors: {effectors.Count}");
     Console.WriteLine("Naciśnij Ctrl+C, aby zakończyć.");
 
     await host.RunAsync(cancellation.Token);
@@ -142,15 +144,17 @@ internal sealed class SensorHostService
   private static readonly Encoding PipeEncoding = new UTF8Encoding(false);
 
   private readonly HostSettings _settings;
+  private readonly IReadOnlyList<EffectorDefinition> _effectors;
   private readonly SensorStateStore _store;
   private readonly SensorHostLogger _logger;
   private int _consecutiveSensorErrors;
   private int _startupInvalidLineCount;
   private bool _receivedValidSensorMessage;
 
-  public SensorHostService(HostSettings settings, SensorStateStore store, SensorHostLogger logger)
+  public SensorHostService(HostSettings settings, IReadOnlyList<EffectorDefinition> effectors, SensorStateStore store, SensorHostLogger logger)
   {
     _settings = settings;
+    _effectors = effectors;
     _store = store;
     _logger = logger;
   }
@@ -175,16 +179,16 @@ internal sealed class SensorHostService
       _WatchSampleTimeoutAsync(cancellationToken),
       _WatchWindowsSessionAsync(cancellationToken),
       pipeTask,
-      _RunShellyAutomationAsync(cancellationToken)
+      _RunEffectorAutomationAsync(cancellationToken)
     };
 
     await Task.WhenAll(tasks);
   }
 
-  // Uruchamia automatykę Shelly niezależnie od odczytu sensora i serwera pipe.
-  private Task _RunShellyAutomationAsync(CancellationToken cancellationToken)
+  // Uruchamia automatykę efektorów niezależnie od odczytu sensora i serwera pipe.
+  private Task _RunEffectorAutomationAsync(CancellationToken cancellationToken)
   {
-    var automation = new ShellyAutomationService(_settings.Shelly, _store, _WriteOperationalLog);
+    var automation = new EffectorAutomationService(_effectors, _store, _WriteOperationalLog);
     return automation.RunAsync(cancellationToken);
   }
 
@@ -608,63 +612,209 @@ internal sealed class SensorHostService
   }
 }
 
-internal sealed class ShellyAutomationService
+internal sealed record EffectorDefinition
 {
-  private readonly ShellySettings _settings;
+  private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+  {
+    PropertyNameCaseInsensitive = true,
+    Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+  };
+
+  public string Name { get; init; } = "";
+  public string Type { get; init; } = "";
+  public bool Enabled { get; init; }
+  public ShellyPlugConnectionSettings? Connection { get; init; }
+  public EffectorCondition? TurnOnWhen { get; init; }
+  public string DefaultState { get; init; } = "off";
+
+  /// <summary>Wczytuje definicje efektorów z katalogu konfiguracji.</summary>
+  public static IReadOnlyList<EffectorDefinition> LoadAll(string directory, Action<string> writeLog)
+  {
+    var resolvedDirectory = Path.IsPathRooted(directory)
+      ? directory
+      : Path.Combine(AppContext.BaseDirectory, directory);
+
+    if (!Directory.Exists(resolvedDirectory))
+    {
+      writeLog($"Effectors: katalog nie istnieje '{resolvedDirectory}'.");
+      return [];
+    }
+
+    var effectors = new List<EffectorDefinition>();
+    foreach (var path in Directory.EnumerateFiles(resolvedDirectory, "*.json").Order(StringComparer.OrdinalIgnoreCase))
+    {
+      try
+      {
+        var json = File.ReadAllText(path);
+        var effector = JsonSerializer.Deserialize<EffectorDefinition>(json, JsonOptions)?.Normalize(Path.GetFileNameWithoutExtension(path));
+        if (effector is not null)
+          effectors.Add(effector);
+      }
+      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+      {
+        writeLog($"Effectors: nie udało się wczytać '{path}': {ex.Message}");
+      }
+    }
+
+    writeLog($"Effectors: wczytano {effectors.Count} z '{resolvedDirectory}'.");
+    return effectors;
+  }
+
+  /// <summary>Sprawdza, czy aktualny snapshot spełnia regułę włączenia efektora.</summary>
+  public bool ShouldTurnOn(SensorSnapshot snapshot)
+  {
+    if (!string.Equals(DefaultState, "off", StringComparison.OrdinalIgnoreCase))
+      return false;
+
+    return TurnOnWhen?.Matches(snapshot) == true;
+  }
+
+  // Uzupełnia nazwę z pliku i odcina definicje bez typu.
+  private EffectorDefinition? Normalize(string fallbackName)
+  {
+    if (string.IsNullOrWhiteSpace(Type))
+      return null;
+
+    return this with
+    {
+      Name = string.IsNullOrWhiteSpace(Name) ? fallbackName : Name,
+      Connection = Connection?.Normalize(),
+      DefaultState = string.IsNullOrWhiteSpace(DefaultState) ? "off" : DefaultState
+    };
+  }
+}
+
+internal sealed record EffectorCondition(
+  SensorStatus? SensorStatus,
+  WindowsSessionStatus? SessionStatus,
+  bool? WorkPresence)
+{
+  /// <summary>Sprawdza dopasowanie warunków do snapshotu pipe.</summary>
+  public bool Matches(SensorSnapshot snapshot)
+  {
+    if (SensorStatus.HasValue && snapshot.SensorStatus != SensorStatus.Value)
+      return false;
+
+    if (SessionStatus.HasValue && snapshot.SessionStatus != SessionStatus.Value)
+      return false;
+
+    if (WorkPresence.HasValue && snapshot.WorkPresence != WorkPresence.Value)
+      return false;
+
+    return SensorStatus.HasValue || SessionStatus.HasValue || WorkPresence.HasValue;
+  }
+}
+
+internal sealed record ShellyPlugConnectionSettings(
+  string Mode,
+  string ServerUri,
+  string DeviceId,
+  string AuthKeyEnvironmentVariable,
+  int Channel,
+  int CommandTimeoutSeconds,
+  int RetryCount,
+  int StateCheckIntervalSeconds)
+{
+  /// <summary>Uzupełnia domyślne wartości techniczne połączenia Shelly.</summary>
+  public ShellyPlugConnectionSettings Normalize()
+  {
+    return this with
+    {
+      Mode = string.IsNullOrWhiteSpace(Mode) ? "cloud" : Mode,
+      AuthKeyEnvironmentVariable = string.IsNullOrWhiteSpace(AuthKeyEnvironmentVariable) ? "STANDPULSE_SHELLY_AUTH_KEY" : AuthKeyEnvironmentVariable,
+      Channel = Channel < 0 ? 0 : Channel,
+      CommandTimeoutSeconds = CommandTimeoutSeconds <= 0 ? 10 : CommandTimeoutSeconds,
+      RetryCount = RetryCount < 0 ? 2 : RetryCount,
+      StateCheckIntervalSeconds = StateCheckIntervalSeconds <= 0 ? 30 : StateCheckIntervalSeconds
+    };
+  }
+}
+
+internal sealed class EffectorAutomationService
+{
+  private readonly IReadOnlyList<EffectorDefinition> _effectors;
   private readonly SensorStateStore _store;
   private readonly Action<string> _writeLog;
 
-  /// <summary>Tworzy automatykę zasilania Shelly sterowaną statusem sensora i sesji Windows.</summary>
-  public ShellyAutomationService(ShellySettings settings, SensorStateStore store, Action<string> writeLog)
+  /// <summary>Tworzy automatykę efektorów sterowaną snapshotem sensora i sesji Windows.</summary>
+  public EffectorAutomationService(IReadOnlyList<EffectorDefinition> effectors, SensorStateStore store, Action<string> writeLog)
   {
-    _settings = settings;
+    _effectors = effectors;
     _store = store;
     _writeLog = writeLog;
   }
 
-  /// <summary>Monitoruje status sensora oraz blokadę sesji Windows i wysyła komendy do Shelly Cloud.</summary>
+  /// <summary>Uruchamia obsługę wszystkich włączonych efektorów.</summary>
   public async Task RunAsync(CancellationToken cancellationToken)
   {
-    if (!_settings.Enabled)
-      return;
-
-    if (!string.Equals(_settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
+    var tasks = new List<Task>();
+    foreach (var effector in _effectors.Where(effector => effector.Enabled))
     {
-      _writeLog($"Shelly pominięty: nieobsługiwany tryb '{_settings.Mode}'.");
+      if (string.Equals(effector.Type, "shellyPlug", StringComparison.OrdinalIgnoreCase))
+      {
+        tasks.Add(_RunShellyPlugAsync(effector, cancellationToken));
+        continue;
+      }
+
+      _writeLog($"Effector {effector.Name}: pominięty nieobsługiwany typ '{effector.Type}'.");
+    }
+
+    if (tasks.Count == 0)
+    {
+      _writeLog("Effectors: brak włączonych efektorów.");
       return;
     }
 
-    var authKey = ShellyAuthKeyReader.GetValue(_settings.AuthKeyEnvironmentVariable);
+    await Task.WhenAll(tasks);
+  }
+
+  // Uruchamia pojedynczy efektor Shelly Plug.
+  private async Task _RunShellyPlugAsync(EffectorDefinition effector, CancellationToken cancellationToken)
+  {
+    var settings = effector.Connection;
+    if (settings is null)
+    {
+      _writeLog($"Effector {effector.Name}: brak sekcji connection.");
+      return;
+    }
+
+    if (!string.Equals(settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
+    {
+      _writeLog($"Effector {effector.Name}: pominięty nieobsługiwany tryb Shelly '{settings.Mode}'.");
+      return;
+    }
+
+    var authKey = ShellyAuthKeyReader.GetValue(settings.AuthKeyEnvironmentVariable);
     if (string.IsNullOrWhiteSpace(authKey))
     {
-      _writeLog($"Shelly pominięty: brak zmiennej środowiskowej {_settings.AuthKeyEnvironmentVariable}.");
+      _writeLog($"Effector {effector.Name}: brak zmiennej środowiskowej {settings.AuthKeyEnvironmentVariable}.");
       return;
     }
 
-    if (!Uri.TryCreate(_settings.ServerUri, UriKind.Absolute, out var serverUri))
+    if (!Uri.TryCreate(settings.ServerUri, UriKind.Absolute, out var serverUri))
     {
-      _writeLog($"Shelly pominięty: niepoprawny serverUri '{_settings.ServerUri}'.");
+      _writeLog($"Effector {effector.Name}: niepoprawny serverUri '{settings.ServerUri}'.");
       return;
     }
 
     using var httpClient = new HttpClient
     {
       BaseAddress = serverUri,
-      Timeout = TimeSpan.FromSeconds(_settings.CommandTimeoutSeconds)
+      Timeout = TimeSpan.FromSeconds(settings.CommandTimeoutSeconds)
     };
-    var client = new ShellyCloudClient(_settings, authKey, httpClient, _writeLog);
+    var client = new ShellyCloudClient(effector.Name, settings, authKey, httpClient, _writeLog);
     using var subscription = _store.Subscribe();
     using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
 
     var snapshot = _store.GetSnapshot();
     bool? lastAppliedOutput = null;
-    var stateCheckInterval = TimeSpan.FromSeconds(_settings.StateCheckIntervalSeconds);
+    var stateCheckInterval = TimeSpan.FromSeconds(settings.StateCheckIntervalSeconds);
     var nextStateCheckAt = DateTimeOffset.Now + stateCheckInterval;
-    _writeLog("Shelly Cloud: automatyka uruchomiona.");
+    _writeLog($"Effector {effector.Name}: automatyka Shelly Plug uruchomiona.");
 
     try
     {
-      lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, false, cancellationToken);
+      lastAppliedOutput = await _ApplyDecisionAsync(effector, client, snapshot, lastAppliedOutput, false, cancellationToken);
 
       while (await timer.WaitForNextTickAsync(cancellationToken))
       {
@@ -673,7 +823,7 @@ internal sealed class ShellyAutomationService
 
         var now = DateTimeOffset.Now;
         var shouldVerifyState = now >= nextStateCheckAt;
-        lastAppliedOutput = await _ApplyDecisionAsync(client, snapshot, lastAppliedOutput, shouldVerifyState, cancellationToken);
+        lastAppliedOutput = await _ApplyDecisionAsync(effector, client, snapshot, lastAppliedOutput, shouldVerifyState, cancellationToken);
 
         if (shouldVerifyState)
           nextStateCheckAt = now + stateCheckInterval;
@@ -686,16 +836,16 @@ internal sealed class ShellyAutomationService
     }
   }
 
-  // Wylicza oczekiwany stan gniazdka i wysyła komendę tylko, gdy jest potrzebna.
+  // Wylicza oczekiwany stan efektora i wysyła komendę tylko, gdy jest potrzebna.
   private async Task<bool?> _ApplyDecisionAsync(
+    EffectorDefinition effector,
     ShellyCloudClient client,
     SensorSnapshot snapshot,
     bool? lastAppliedOutput,
     bool verifyRealState,
     CancellationToken cancellationToken)
   {
-    var sessionStatus = snapshot.SessionStatus;
-    var desiredOutput = snapshot.Status == SensorStatus.Presence && sessionStatus == WindowsSessionStatus.Active;
+    var desiredOutput = effector.ShouldTurnOn(snapshot);
     var reason = lastAppliedOutput is null ? "startup" : "state-change";
 
     if (lastAppliedOutput == desiredOutput)
@@ -711,28 +861,30 @@ internal sealed class ShellyAutomationService
         return lastAppliedOutput;
 
       reason = "drift";
-      _writeLog($"Shelly drift sensor={snapshot.Status} session={sessionStatus} desired={(desiredOutput ? "on" : "off")} actual={(actualOutput.Value ? "on" : "off")}");
+      _writeLog($"Effector {effector.Name}: drift sensor={snapshot.SensorStatus} session={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} desired={(desiredOutput ? "on" : "off")} actual={(actualOutput.Value ? "on" : "off")}");
     }
 
     var succeeded = await client.SetOutputAsync(desiredOutput, cancellationToken);
     if (succeeded)
       lastAppliedOutput = desiredOutput;
 
-    _writeLog($"Shelly command sensor={snapshot.Status} session={sessionStatus} output={(desiredOutput ? "on" : "off")} reason={reason} success={succeeded}");
+    _writeLog($"Effector {effector.Name}: command type={effector.Type} sensor={snapshot.SensorStatus} session={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} output={(desiredOutput ? "on" : "off")} reason={reason} success={succeeded}");
     return lastAppliedOutput;
   }
 }
 
 internal sealed class ShellyCloudClient
 {
-  private readonly ShellySettings _settings;
+  private readonly string _effectorName;
+  private readonly ShellyPlugConnectionSettings _settings;
   private readonly string _authKey;
   private readonly HttpClient _httpClient;
   private readonly Action<string> _writeLog;
 
   /// <summary>Tworzy klienta Shelly Cloud dla jednego urządzenia Plug S.</summary>
-  public ShellyCloudClient(ShellySettings settings, string authKey, HttpClient httpClient, Action<string> writeLog)
+  public ShellyCloudClient(string effectorName, ShellyPlugConnectionSettings settings, string authKey, HttpClient httpClient, Action<string> writeLog)
   {
+    _effectorName = effectorName;
     _settings = settings;
     _authKey = authKey;
     _httpClient = httpClient;
@@ -760,7 +912,7 @@ internal sealed class ShellyCloudClient
         if (response.IsSuccessStatusCode)
           return true;
 
-        _writeLog($"Shelly Cloud: HTTP {(int)response.StatusCode} przy turn={turn}, próba {attempt}.");
+        _writeLog($"Effector {_effectorName}: Shelly Cloud HTTP {(int)response.StatusCode} przy turn={turn}, próba {attempt}.");
       }
       catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
       {
@@ -768,7 +920,7 @@ internal sealed class ShellyCloudClient
       }
       catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
       {
-        _writeLog($"Shelly Cloud: błąd przy turn={turn}, próba {attempt}: {ex.Message}");
+        _writeLog($"Effector {_effectorName}: Shelly Cloud błąd przy turn={turn}, próba {attempt}: {ex.Message}");
       }
 
       if (attempt <= _settings.RetryCount)
@@ -794,7 +946,7 @@ internal sealed class ShellyCloudClient
         using var response = await _httpClient.PostAsync("/device/status", content, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
-          _writeLog($"Shelly Cloud: HTTP {(int)response.StatusCode} przy status, próba {attempt}.");
+          _writeLog($"Effector {_effectorName}: Shelly Cloud HTTP {(int)response.StatusCode} przy status, próba {attempt}.");
         }
         else
         {
@@ -803,7 +955,7 @@ internal sealed class ShellyCloudClient
           if (_TryReadOutput(document.RootElement, out var output))
             return output;
 
-          _writeLog($"Shelly Cloud: brak switch:{_settings.Channel}.output w statusie, próba {attempt}.");
+          _writeLog($"Effector {_effectorName}: Shelly Cloud brak switch:{_settings.Channel}.output w statusie, próba {attempt}.");
         }
       }
       catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -812,7 +964,7 @@ internal sealed class ShellyCloudClient
       }
       catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
       {
-        _writeLog($"Shelly Cloud: błąd przy status, próba {attempt}: {ex.Message}");
+        _writeLog($"Effector {_effectorName}: Shelly Cloud błąd przy status, próba {attempt}: {ex.Message}");
       }
 
       if (attempt <= _settings.RetryCount)
@@ -858,40 +1010,49 @@ internal static class ShellyAuthKeyReader
   }
 }
 
-internal sealed class ShellyShutdownGuard : IDisposable
+internal sealed class EffectorShutdownGuard : IDisposable
 {
-  private readonly ShellyCloudClient _client;
+  private readonly IReadOnlyList<ShellyCloudClient> _clients;
   private readonly Action<string> _writeLog;
   private bool _isDisposed;
 
-  // Przechowuje klienta używanego tylko podczas kończenia procesu.
-  private ShellyShutdownGuard(ShellyCloudClient client, Action<string> writeLog)
+  // Przechowuje klientów używanych tylko podczas kończenia procesu.
+  private EffectorShutdownGuard(IReadOnlyList<ShellyCloudClient> clients, Action<string> writeLog)
   {
-    _client = client;
+    _clients = clients;
     _writeLog = writeLog;
     AppDomain.CurrentDomain.ProcessExit += _HandleProcessExit;
   }
 
-  /// <summary>Tworzy strażnika, który przy kończeniu procesu próbuje wyłączyć Shelly.</summary>
-  public static ShellyShutdownGuard? Create(ShellySettings settings, Action<string> writeLog)
+  /// <summary>Tworzy strażnika, który przy kończeniu procesu próbuje wyłączyć efektory.</summary>
+  public static EffectorShutdownGuard? Create(IReadOnlyList<EffectorDefinition> effectors, Action<string> writeLog)
   {
-    if (!settings.Enabled || !string.Equals(settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
-      return null;
-
-    var authKey = ShellyAuthKeyReader.GetValue(settings.AuthKeyEnvironmentVariable);
-    if (string.IsNullOrWhiteSpace(authKey))
-      return null;
-
-    if (!Uri.TryCreate(settings.ServerUri, UriKind.Absolute, out var serverUri))
-      return null;
-
-    var httpClient = new HttpClient
+    var clients = new List<ShellyCloudClient>();
+    foreach (var effector in effectors.Where(effector => effector.Enabled && string.Equals(effector.Type, "shellyPlug", StringComparison.OrdinalIgnoreCase)))
     {
-      BaseAddress = serverUri,
-      Timeout = TimeSpan.FromSeconds(settings.CommandTimeoutSeconds)
-    };
-    var client = new ShellyCloudClient(settings, authKey, httpClient, writeLog);
-    return new ShellyShutdownGuard(client, writeLog);
+      var settings = effector.Connection;
+      if (settings is null || !string.Equals(settings.Mode, "cloud", StringComparison.OrdinalIgnoreCase))
+        continue;
+
+      var authKey = ShellyAuthKeyReader.GetValue(settings.AuthKeyEnvironmentVariable);
+      if (string.IsNullOrWhiteSpace(authKey))
+        continue;
+
+      if (!Uri.TryCreate(settings.ServerUri, UriKind.Absolute, out var serverUri))
+        continue;
+
+      var httpClient = new HttpClient
+      {
+        BaseAddress = serverUri,
+        Timeout = TimeSpan.FromSeconds(settings.CommandTimeoutSeconds)
+      };
+      clients.Add(new ShellyCloudClient(effector.Name, settings, authKey, httpClient, writeLog));
+    }
+
+    if (clients.Count == 0)
+      return null;
+
+    return new EffectorShutdownGuard(clients, writeLog);
   }
 
   /// <summary>Odpina handler kończenia procesu.</summary>
@@ -907,13 +1068,16 @@ internal sealed class ShellyShutdownGuard : IDisposable
   // Wysyła bezpieczne OFF podczas wylogowania, restartu albo zamykania procesu.
   private void _HandleProcessExit(object? sender, EventArgs args)
   {
-    try
+    foreach (var client in _clients)
     {
-      _client.SetOutputAsync(false, CancellationToken.None).GetAwaiter().GetResult();
-    }
-    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
-    {
-      _writeLog($"Shelly Cloud: nie udało się wyłączyć przy kończeniu procesu: {ex.Message}");
+      try
+      {
+        client.SetOutputAsync(false, CancellationToken.None).GetAwaiter().GetResult();
+      }
+      catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+      {
+        _writeLog($"Effectors: nie udało się wyłączyć przy kończeniu procesu: {ex.Message}");
+      }
     }
   }
 }
@@ -1314,7 +1478,7 @@ internal sealed record HostSettings(
   PresenceSettings Presence,
   PipeSettings Pipe,
   FakeSensorSettings Fake,
-  ShellySettings Shelly)
+  EffectorsSettings Effectors)
 {
   /// <summary>Wczytuje konfigurację hosta z pliku sensor-settings.json.</summary>
   public static HostSettings Load()
@@ -1346,7 +1510,7 @@ internal sealed record HostSettings(
     new PresenceSettings(120, 10, 5, 3, 20),
     new PipeSettings("StandPulse.Sensor"),
     FakeSensorSettings.Default,
-    new ShellySettings(false, "cloud", "", "", "STANDPULSE_SHELLY_AUTH_KEY", 0, 10, 2, 30));
+    new EffectorsSettings("effectors"));
 
   // Uzupełnia brakujące albo niepoprawne wartości konfiguracji.
   private HostSettings Normalize()
@@ -1356,7 +1520,7 @@ internal sealed record HostSettings(
     var presence = Presence ?? Default.Presence;
     var pipe = Pipe ?? Default.Pipe;
     var fake = Fake ?? Default.Fake;
-    var shelly = Shelly ?? Default.Shelly;
+    var effectors = Effectors ?? Default.Effectors;
 
     if (!source.IsSerial && !source.IsFake)
       source = Default.Source;
@@ -1391,25 +1555,10 @@ internal sealed record HostSettings(
     if (fake.Samples is null || fake.Samples.Count == 0)
       fake = fake with { Samples = Default.Fake.Samples };
 
-    if (string.IsNullOrWhiteSpace(shelly.Mode))
-      shelly = shelly with { Mode = Default.Shelly.Mode };
+    if (string.IsNullOrWhiteSpace(effectors.Directory))
+      effectors = effectors with { Directory = Default.Effectors.Directory };
 
-    if (string.IsNullOrWhiteSpace(shelly.AuthKeyEnvironmentVariable))
-      shelly = shelly with { AuthKeyEnvironmentVariable = Default.Shelly.AuthKeyEnvironmentVariable };
-
-    if (shelly.Channel < 0)
-      shelly = shelly with { Channel = Default.Shelly.Channel };
-
-    if (shelly.CommandTimeoutSeconds <= 0)
-      shelly = shelly with { CommandTimeoutSeconds = Default.Shelly.CommandTimeoutSeconds };
-
-    if (shelly.RetryCount < 0)
-      shelly = shelly with { RetryCount = Default.Shelly.RetryCount };
-
-    if (shelly.StateCheckIntervalSeconds <= 0)
-      shelly = shelly with { StateCheckIntervalSeconds = Default.Shelly.StateCheckIntervalSeconds };
-
-    return new HostSettings(source, serial, presence, pipe, fake, shelly);
+    return new HostSettings(source, serial, presence, pipe, fake, effectors);
   }
 }
 
@@ -1432,6 +1581,8 @@ internal sealed record PresenceSettings(
 
 internal sealed record PipeSettings(string Name);
 
+internal sealed record EffectorsSettings(string Directory);
+
 internal sealed record FakeSensorSettings(
   int IntervalMilliseconds,
   List<FakeSensorSampleSettings> Samples)
@@ -1451,14 +1602,3 @@ internal sealed record FakeSensorSampleSettings(
   int? DistanceCm,
   int Repeat,
   string? RawLine);
-
-internal sealed record ShellySettings(
-  bool Enabled,
-  string Mode,
-  string ServerUri,
-  string DeviceId,
-  string AuthKeyEnvironmentVariable,
-  int Channel,
-  int CommandTimeoutSeconds,
-  int RetryCount,
-  int StateCheckIntervalSeconds);

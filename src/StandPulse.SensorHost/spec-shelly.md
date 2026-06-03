@@ -16,7 +16,7 @@ Gniazdko jest wlaczone tylko wtedy, gdy oba warunki sa spelnione. W pozostalych 
 Aktywny zakres produkcyjny obejmuje MVP (Minimum Viable Product):
 
 1. komunikacje przez Shelly Cloud,
-2. konfiguracje `shelly` w `sensor-settings.json`,
+2. konfiguracje efektora typu `shellyPlug` w pliku `effectors/*.json`,
 3. klucz Cloud API pobierany ze zmiennej srodowiskowej,
 4. automatyczne `ON` dla `presence` i aktywnej sesji Windows,
 5. automatyczne `OFF` dla `absence`, `sensorNotAvailable`, `error`, zablokowanej sesji Windows i konczenia procesu,
@@ -114,7 +114,7 @@ Viewer korzysta z tego statusu do prezentacji i ewentualnego ustawienia trybu re
 
 Warstwa komunikacji z Shelly jest odseparowana od logiki decyzji. Logika decyzji przekazuje tylko oczekiwany stan `on/off`.
 
-Konfiguracja zawiera co najmniej:
+Konfiguracja efektora zawiera co najmniej:
 
 1. wlaczenie lub wylaczenie integracji Shelly,
 2. tryb komunikacji `cloud`,
@@ -124,7 +124,8 @@ Konfiguracja zawiera co najmniej:
 6. kanal przekaznika,
 7. timeout komendy,
 8. liczbe ponowien,
-9. interwal weryfikacji realnego stanu przekaznika.
+9. interwal weryfikacji realnego stanu przekaznika,
+10. regule `turnOnWhen`, ktora mapuje `sensorStatus` i `sessionStatus` na stan `ON`.
 
 ## Odpornosc na bledy
 

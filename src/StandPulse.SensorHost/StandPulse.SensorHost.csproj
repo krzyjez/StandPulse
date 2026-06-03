@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <None Include="sensor-settings.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="effectors\*.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

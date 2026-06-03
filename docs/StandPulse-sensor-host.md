@@ -117,26 +117,51 @@ Najważniejsze ustawienia:
 7. `presence.maxConsecutiveSensorErrors` - liczba kolejnych błędów firmware po której status przechodzi w `error`.
 8. `presence.maxStartupInvalidLines` - liczba niepoprawnych linii przed pierwszą poprawną wiadomością, po której status przechodzi w `error`.
 9. `pipe.name` - nazwa Windows Named Pipe.
-10. `shelly.enabled` - włącza automatyczne sterowanie Shelly Plug S.
-11. `shelly.mode` - tryb komunikacji, obecnie `cloud`.
-12. `shelly.serverUri` - adres serwera Shelly Cloud z aplikacji Shelly.
-13. `shelly.deviceId` - identyfikator urządzenia Shelly bez dwukropków.
-14. `shelly.authKeyEnvironmentVariable` - nazwa zmiennej środowiskowej z kluczem Cloud API.
-15. `shelly.channel` - kanał przekaźnika Shelly, dla Plug S Gen3 domyślnie `0`.
-16. `shelly.commandTimeoutSeconds` - limit czasu pojedynczej komendy do Shelly Cloud.
-17. `shelly.retryCount` - liczba ponowień po nieudanej komendzie.
-18. `shelly.stateCheckIntervalSeconds` - odstęp między weryfikacjami realnego stanu przekaźnika Shelly.
+10. `effectors.directory` - katalog z plikami JSON opisującymi zewnętrzne efektory, domyślnie `effectors`.
 
-Integracja Shelly działa według reguły:
+Efektory są definiowane w osobnych plikach:
+
+```text
+effectors\*.json
+```
+
+Przykład efektora Shelly Plug:
+
+```json
+{
+  "name": "desk-plug",
+  "type": "shellyPlug",
+  "enabled": true,
+  "connection": {
+    "mode": "cloud",
+    "serverUri": "https://shelly-258-eu.shelly.cloud",
+    "deviceId": "d885ac1745e4",
+    "authKeyEnvironmentVariable": "STANDPULSE_SHELLY_AUTH_KEY",
+    "channel": 0,
+    "commandTimeoutSeconds": 10,
+    "retryCount": 2,
+    "stateCheckIntervalSeconds": 30
+  },
+  "turnOnWhen": {
+    "sensorStatus": "presence",
+    "sessionStatus": "active"
+  },
+  "defaultState": "off"
+}
+```
+
+Na razie obsługiwany typ efektora to `shellyPlug`. Reguła `turnOnWhen` opisuje warunki włączenia, a pozostałe stany prowadzą do `defaultState`, obecnie używanego jako bezpieczne `off`.
+
+Efektor Shelly z przykładu działa według reguły:
 
 ```text
 sensor presence + odblokowana sesja Windows -> Shelly ON
 sensor absence/sensorNotAvailable/error albo zablokowana sesja Windows -> Shelly OFF
 ```
 
-Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę Shelly i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Host okresowo odczytuje realny stan `switch:0.output` i koryguje gniazdko, jeżeli różni się ono od decyzji systemu. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF`.
+Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę efektorów i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Efektor Shelly okresowo odczytuje realny stan `switch:0.output` i koryguje gniazdko, jeżeli różni się ono od decyzji systemu. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF` do aktywnych efektorów.
 
-Klucz Cloud API nie powinien być zapisywany w `sensor-settings.json`. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
+Klucz Cloud API nie powinien być zapisywany w pliku efektora. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("STANDPULSE_SHELLY_AUTH_KEY", "<auth_key>", "User")
