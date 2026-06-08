@@ -1177,6 +1177,7 @@ internal sealed class SensorStateStore
   {
     SensorSnapshot? changedSnapshot = null;
     SensorSampleDecision? changedSampleDecision = null;
+    string? transitionLog = null;
     var now = DateTimeOffset.Now;
 
     lock (_syncRoot)
@@ -1185,30 +1186,55 @@ internal sealed class SensorStateStore
 
       if (_candidateStatus != sampleStatus)
       {
+        var previousCandidate = _candidateStatus;
+        var previousCandidateSince = _candidateSince;
+        var stableStatus = _snapshot.Status;
         _candidateStatus = sampleStatus;
         _candidateSince = now;
-        return;
+
+        if (previousCandidate.HasValue &&
+            previousCandidate.Value != stableStatus &&
+            sampleStatus == stableStatus)
+        {
+          transitionLog = _FormatCandidateCancelLog(
+            previousCandidate.Value,
+            stableStatus,
+            now - (previousCandidateSince ?? now),
+            sampleDecision);
+        }
+        else if (sampleStatus != stableStatus)
+        {
+          transitionLog = _FormatCandidateStartLog(stableStatus, sampleStatus, sampleDecision);
+        }
       }
-
-      var stableFor = now - (_candidateSince ?? now);
-      if (stableFor < stateChangeDelay)
-        return;
-
-      if (_snapshot.Status == sampleStatus)
+      else
       {
-        _snapshot = _snapshot with { LastSampleAt = _lastSampleAt };
-        return;
+        var stableFor = now - (_candidateSince ?? now);
+        if (stableFor >= stateChangeDelay)
+        {
+          if (_snapshot.Status == sampleStatus)
+          {
+            _snapshot = _snapshot with { LastSampleAt = _lastSampleAt };
+          }
+          else
+          {
+            var previousStatus = _snapshot.Status;
+            _snapshot = _snapshot with
+            {
+              Status = sampleStatus,
+              LastSampleAt = _lastSampleAt,
+              StableSince = _candidateSince ?? now
+            };
+            changedSnapshot = _snapshot;
+            changedSampleDecision = sampleDecision;
+            transitionLog = _FormatStateChangeLog(previousStatus, sampleStatus, stableFor, sampleDecision);
+          }
+        }
       }
-
-      _snapshot = _snapshot with
-      {
-        Status = sampleStatus,
-        LastSampleAt = _lastSampleAt,
-        StableSince = _candidateSince ?? now
-      };
-      changedSnapshot = _snapshot;
-      changedSampleDecision = sampleDecision;
     }
+
+    if (transitionLog is not null)
+      _writeLog?.Invoke(transitionLog);
 
     if (changedSnapshot is not null)
       _Publish(changedSnapshot, changedSampleDecision);
@@ -1306,7 +1332,48 @@ internal sealed class SensorStateStore
     if (sampleDecision is null)
       return message;
 
-    return $"{message} present={sampleDecision.Present} targetStatus={sampleDecision.TargetStatus} distanceCm={sampleDecision.DistanceCm?.ToString() ?? "-"} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
+    return $"{message} {_FormatSampleDecision(sampleDecision)}";
+  }
+
+  // Składa log rozpoczęcia kandydata zmiany stabilnego stanu.
+  private static string _FormatCandidateStartLog(
+    SensorStatus from,
+    SensorStatus to,
+    SensorSampleDecision sampleDecision)
+  {
+    return $"candidate start from={from} to={to} {_FormatSampleDecision(sampleDecision)}";
+  }
+
+  // Składa log anulowania kandydata, gdy próbki wracają do stabilnego stanu.
+  private static string _FormatCandidateCancelLog(
+    SensorStatus canceled,
+    SensorStatus backTo,
+    TimeSpan after,
+    SensorSampleDecision sampleDecision)
+  {
+    return $"candidate cancel canceled={canceled} backTo={backTo} after={_FormatSeconds(after)}s {_FormatSampleDecision(sampleDecision)}";
+  }
+
+  // Składa log zatwierdzonej zmiany stabilnego stanu.
+  private static string _FormatStateChangeLog(
+    SensorStatus from,
+    SensorStatus to,
+    TimeSpan stableFor,
+    SensorSampleDecision sampleDecision)
+  {
+    return $"state change from={from} to={to} stableFor={_FormatSeconds(stableFor)}s {_FormatSampleDecision(sampleDecision)}";
+  }
+
+  // Składa szczegóły próbki istotne przy diagnozowaniu fałszywej nieobecności.
+  private static string _FormatSampleDecision(SensorSampleDecision sampleDecision)
+  {
+    return $"present={sampleDecision.Present} targetStatus={sampleDecision.TargetStatus} distanceCm={sampleDecision.DistanceCm?.ToString() ?? "-"} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
+  }
+
+  // Formatuje czas trwania z kropką dziesiętną niezależnie od ustawień Windows.
+  private static string _FormatSeconds(TimeSpan value)
+  {
+    return value.TotalSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
   }
 
   internal sealed class SensorSubscription : IDisposable
