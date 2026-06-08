@@ -1138,7 +1138,12 @@ internal sealed class SensorStateStore
   private readonly ConcurrentDictionary<Guid, ChannelWriter<SensorSnapshot>> _subscriptions = new();
   private readonly Action<string>? _writeLog;
 
-  private SensorSnapshot _snapshot = new(SensorStatus.SensorNotAvailable, WindowsSessionStatus.Unknown, null, DateTimeOffset.Now);
+  private SensorSnapshot _snapshot = new(
+    SensorStatus.SensorNotAvailable,
+    WindowsSessionStatus.Unknown,
+    null,
+    DateTimeOffset.Now,
+    DateTimeOffset.Now);
   private SensorStatus? _candidateStatus;
   private DateTimeOffset? _candidateSince;
   private DateTimeOffset? _lastSampleAt;
@@ -1219,12 +1224,17 @@ internal sealed class SensorStateStore
           else
           {
             var previousStatus = _snapshot.Status;
-            _snapshot = _snapshot with
+            var previousWorkPresence = _snapshot.WorkPresence;
+            var nextSnapshot = _snapshot with
             {
               Status = sampleStatus,
               LastSampleAt = _lastSampleAt,
               StableSince = _candidateSince ?? now
             };
+            if (nextSnapshot.WorkPresence != previousWorkPresence)
+              nextSnapshot = nextSnapshot with { WorkPresenceSince = _candidateSince ?? now };
+
+            _snapshot = nextSnapshot;
             changedSnapshot = _snapshot;
             changedSampleDecision = sampleDecision;
             transitionLog = _FormatStateChangeLog(previousStatus, sampleStatus, stableFor, sampleDecision);
@@ -1257,12 +1267,17 @@ internal sealed class SensorStateStore
       if (_snapshot.Status == status)
         return;
 
-      _snapshot = _snapshot with
+      var previousWorkPresence = _snapshot.WorkPresence;
+      var nextSnapshot = _snapshot with
       {
         Status = status,
         LastSampleAt = _lastSampleAt,
         StableSince = now
       };
+      if (nextSnapshot.WorkPresence != previousWorkPresence)
+        nextSnapshot = nextSnapshot with { WorkPresenceSince = now };
+
+      _snapshot = nextSnapshot;
       changedSnapshot = _snapshot;
     }
 
@@ -1280,12 +1295,17 @@ internal sealed class SensorStateStore
       if (_snapshot.SessionStatus == status)
         return;
 
-      _snapshot = _snapshot with { SessionStatus = status };
+      var previousWorkPresence = _snapshot.WorkPresence;
+      var nextSnapshot = _snapshot with { SessionStatus = status };
+      if (nextSnapshot.WorkPresence != previousWorkPresence)
+        nextSnapshot = nextSnapshot with { WorkPresenceSince = DateTimeOffset.Now };
+
+      _snapshot = nextSnapshot;
       changedSnapshot = _snapshot;
     }
 
     if (changedSnapshot is not null)
-      _Publish(changedSnapshot, null, $"Windows session status={status} workPresence={changedSnapshot.WorkPresence}");
+      _Publish(changedSnapshot, null, $"session change {_FormatStatusLog(changedSnapshot, null)}");
   }
 
   /// <summary>Oznacza sensor jako niedostępny, jeśli ostatnia próbka jest zbyt stara.</summary>
@@ -1328,11 +1348,17 @@ internal sealed class SensorStateStore
   // Składa krótki wpis konsoli dla stabilnej zmiany statusu.
   private static string _FormatStatusLog(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision)
   {
-    var message = $"sensorStatus={snapshot.Status} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} stableSince={snapshot.StableSince:HH:mm:ss}";
+    var message = $"sensorStatus={snapshot.Status} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} lastSampleAt={_FormatTimestamp(snapshot.LastSampleAt)} stableSince={snapshot.StableSince:O} workPresenceSince={snapshot.WorkPresenceSince:O}";
     if (sampleDecision is null)
       return message;
 
     return $"{message} {_FormatSampleDecision(sampleDecision)}";
+  }
+
+  // Formatuje opcjonalny znacznik czasu do logu zmiany stanu.
+  private static string _FormatTimestamp(DateTimeOffset? value)
+  {
+    return value.HasValue ? value.Value.ToString("O") : "-";
   }
 
   // Składa log rozpoczęcia kandydata zmiany stabilnego stanu.
@@ -1446,7 +1472,7 @@ internal sealed class SensorHostLogger : IDisposable
   /// <summary>Formatuje linię logu hosta z krótką sygnaturą czasu.</summary>
   public static string FormatLine(string message)
   {
-    return $"{DateTimeOffset.Now:HH:mm:ss} {message}";
+    return $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}";
   }
 
   /// <summary>Zamyka plik logu po zakończeniu procesu.</summary>
@@ -1465,7 +1491,9 @@ internal sealed record SensorSnapshot(
   [property: JsonPropertyOrder(5)]
   DateTimeOffset? LastSampleAt,
   [property: JsonPropertyOrder(6)]
-  DateTimeOffset StableSince)
+  DateTimeOffset StableSince,
+  [property: JsonPropertyOrder(7)]
+  DateTimeOffset WorkPresenceSince)
 {
   [JsonPropertyOrder(0)]
   public string Type => "status";
