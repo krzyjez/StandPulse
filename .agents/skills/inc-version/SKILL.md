@@ -1,10 +1,10 @@
 ---
 name: inc-version
-description: Zwiększ patch version projektu i przygotuj nowy wpis na początku pliku `version.md` w katalogu głównym repozytorium.
+description: Zwiększ numer wersji projektu robiąc wpis do pliku `version.md`
 info: Komenda wspólna. Zakłada ścisły format `version.md`, bo plik może być przetwarzany przez skrypty użytkownika.
 implicit-invocation: false
-version: 3
-modified-date: 2026-04-03
+version: 4
+modified-date: 2026-07-24
 ---
 
 # Inc Version
@@ -22,15 +22,26 @@ Używaj tej komendy tylko wtedy, gdy zamykany jest sensowny etap pracy, to znacz
 
 ## Zasady podstawowe
 
-- Pracuj zawsze na pliku `version.md` w katalogu głównym projektu.
-- Nie modyfikuj żadnych innych plików niż `version.md`, nawet jeśli w repo istnieją skrypty lub konwencje synchronizujące numer wersji do kodu; taka synchronizacja należy do osobnego, późniejszego kroku użytkownika.
+- Pracuj na pliku `version.md` w katalogu głównym projektu.
+- Poza `version.md` modyfikuj tylko pliki wymagane przez rozdział `Propagacja wersji`.
 - Jeśli plik nie istnieje, utwórz go pod dokładnie tą nazwą.
-- Zmieniaj wyłącznie ostatni segment wersji, czyli patch.
-- Nie zmieniaj major ani minor.
+- Zmieniaj wyłącznie ostatni segment wersji, czyli patch, nie zmieniaj major ani minor - mogą one być zmienione na wyraźne życzenie użytkownika.
 - Nowy wpis zawsze wstawiaj na początek pliku.
 - Nie modyfikuj wcześniejszych wpisów.
 - Nie zgaduj. Jeśli brakuje danych do wpisu, pomiń niepewny punkt i zapytaj użytkownika, czy dana informacja ma trafić do `version.md`.
 - Jeśli plik istnieje, najpierw sprawdź czy jego format jest zgodny z przyjętym schematem. Jeśli format jest błędny albo niejednoznaczny, zaraportuj problem i niczego nie modyfikuj.
+
+## Propagacja wersji
+
+Po przygotowaniu nowej wersji w `version.md` sprawdź, czy projekt ma inne jawne miejsce przechowujące numer wersji programu albo pakietu.
+
+Najpierw szukaj istniejącego skryptu lub komendy projektu, która jednoznacznie synchronizuje numer wersji do plików źródłowych. Może to być na przykład skrypt opisany w `package.json`, `pyproject.toml`, pliku projektu, dokumentacji release albo katalogu narzędzi. Jeśli taki skrypt istnieje i jego przeznaczenie jest jasne, uruchom go automatycznie.
+
+Jeśli nie ma takiego skryptu, samodzielnie zaktualizuj oczywisty plik źródłowy z wersją.
+
+Aktualizuj tylko pola, które jednoznacznie przechowują ten sam numer wersji projektu. Nie zmieniaj wersji zależności, target frameworków, wersji narzędzi, plików lock ani wygenerowanych artefaktów, chyba że uruchomiony skrypt projektu zrobi to sam.
+
+Jeśli istnieje kilka równorzędnych źródeł wersji i nie wiadomo, które jest kanoniczne, zaraportuj niejednoznaczność i nie propaguj wersji ręcznie. Jeśli nie znajdziesz żadnego miejsca do propagacji, poinformuj użytkownika, że wersja została zaktualizowana tylko w `version.md`.
 
 ## Format krytyczny
 
@@ -42,8 +53,8 @@ Nowy wpis musi wyglądać dokładnie tak:
 
 ```md
 # x.y.z YYYY-MM-DD HH:mm
-- Added validation for missing config files / Prevents silent startup failures
-- Fixed version parsing in release script / Keeps patch bump stable for double-digit versions
+- Opis zmiany pierwszej..
+- Opis zmiany drugiej...
 
 ```
 
@@ -90,27 +101,6 @@ Nie wpisuj:
 - zwykłych stanów pośrednich, które nie domykają etapu,
 - ogólników,
 - szczegółów bez znaczenia dla changeloga.
-
-## Format wpisu
-
-Traktuj tę sekcję jako opis treści punktów, a nie jako osobny ścisły szablon znak po znaku.
-
-Stosuj krótki, techniczny format:
-
-- nagłówek `# x.y.z YYYY-MM-DD HH:mm`,
-- pod nim 3-6 punktów,
-- każdy punkt ma zawierać dokładnie dwie części oddzielone znakiem ` / `:
-  opis zmiany / sens zmiany albo efekt
-- nie dodawaj dodatkowych etykiet typu `WHAT`, `WHY`, `STATUS` ani innych znaczników pomocniczych.
-
-## Styl
-
-- Pisz konkretnie i rzeczowo.
-- Zamiast ogólników napisz, co faktycznie zmieniono.
-- Opisuj efekt dla użytkownika, stabilności albo dalszej pracy.
-- Jeśli masz wątpliwość, pomiń punkt zamiast dopisywać ogólnik albo domysł.
-- Unikaj duplikatów między punktami.
-- Nie zaciemniaj wpisu dodatkowymi etykietami ani komentarzami spoza ustalonego formatu.
 
 ## Zasada końcowa
 

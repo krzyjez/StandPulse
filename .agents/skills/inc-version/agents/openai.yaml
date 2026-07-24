@@ -1,6 +1,7 @@
 interface:
   display_name: "inc-version"
-  short_description: "Zwiększenie patch version i wpis w version.md."
-  default_prompt: "Use $inc-version to bump the project patch version and add a new version.md entry."
+  short_description: "Zwiększ numer wersji projektu robiąc wpis do pliku `version.md`"
+  default_prompt: "Use $inc-version to zwiększyć numer wersji projektu i dopisać wpis w version.md."
+
 policy:
   allow_implicit_invocation: false

@@ -3,8 +3,8 @@ name: todo
 description: Aktualizuj plik `todo.md` w katalogu głównym projektu, utrzymując luźną, ale uporządkowaną listę otwartych tematów roboczych.
 info: Komenda wspólna do utrzymywania spójnych notatek roboczych w pliku `todo.md`.
 implicit-invocation: true
-version: 3
-modified-date: 2026-04-08
+version: 5
+modified-date: 2026-07-24
 ---
 
 # Todo
@@ -63,11 +63,11 @@ c) @ użytkownik widział ten przypadek także na produkcji.
 
 ## Notatki użytkownika
 
-Jeśli użytkownik dopisuje własne uwagi po znaku `@`, traktuj je jako ważne i zachowuj je.
+Jeśli użytkownik dopisuje własne uwagi po znaku `@` lub w nawiasach `{}` traktuj je jako ważne i zachowuj je.
 
 Zasady:
 
-- nie usuwaj wpisów użytkownika zaczynających się od `@`, chyba że użytkownik wyraźnie tego chce,
+- nie usuwaj wpisów użytkownika zaczynających się od `@` i w `{}`, chyba że użytkownik wyraźnie tego chce,
 - nie przepisuj ich bez potrzeby,
 - możesz je porządkować tylko wtedy, gdy zachowujesz ich sens i oznaczenie.
 
@@ -87,22 +87,23 @@ Jeśli trzeba zachować techniczny szczegół, streść go krótko własnymi sł
 - Możesz scalać oczywiste duplikaty.
 - Możesz lekko porządkować wpisy, jeśli poprawia to czytelność.
 - Nie przebudowuj pliku na siłę do jednego szablonu, jeśli projekt ma już własny styl.
+- Możesz zmieniać znaczniki - i zawartość zgodnie z konwencją - patrz rozdział poniżej
 
-## Jak oznaczać temat jako wykonany
+## Znaczniki
 
-Temat oznaczaj jako wykonany tylko na wyraźną prośbę użytkownika.
-
-Jeśli użytkownik wyraźnie poprosi o oznaczenie tematu jako wykonanego:
-
-- zostaw sam nagłówek tematu,
-- oznacz w tytule, że temat jest wykonany,
-- usuń szczegółową treść tego tematu, aby odchudzić plik.
-
-Przykład:
+Znaczniki wypisujemy w nawiasach kwadratowych w temacie, np.:
 
 ```md
 # 4. [done] Obsługa błędnego emaila
 ```
+
+Posługujemy się następującymi znacznikami:
+- **todo** - temat jest do zrobienia, planowany - stan początkowy tematu, nowy temat trafia z takim znacznikiem.
+- **for-test** - temat jest zrealizowany ale wymaga przetestowania - jeśli zmieniamy na ten znacznik to zamiast treści z etapu **todo** wypisujemy wskazówki co należy przetestować. Jeśli zrealizowałeś temat ustawiasz taki status. Nigdy nie przechodź od **todo** do **done** samodzielnie z pominięciem tego statusu.
+- **done** - temat wykonany, zrealizowany i przetestowany - jeśli zmieniamy na ten status to należy wykasować wszystkie wpisy w danym temacie i zostawić sam nagłówek. Zmiana na ten status wymaga potwierdzenia użytkownika.
+- **rejected** - temat został odrzucony i nie będzie realizowany - powinna znaleźć się uwaga dlaczego
+- **postponed** - temat został opóźniony z różnych powodów - dobrze by było gdyby powód został wpisany
+- **blocked** - temat został zablokowany z przyczyn zewnętrznych - np. błędu biblioteki i czekamy na jego poprawienie, przyczyna powinna znaleźć się w temacie
 
 ## Zasada końcowa
 

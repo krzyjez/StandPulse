@@ -1,6 +1,7 @@
 interface:
   display_name: "todo"
-  short_description: "Aktualizacja roboczego todo projektu."
-  default_prompt: "Use $todo to update todo.md with open work items, decisions, or follow-ups."
+  short_description: "Aktualizuj plik `todo.md` w katalogu głównym projektu, utrzymując luźną, ale uporządkowaną listę otwartych tematów roboczych."
+  default_prompt: "Use $todo to Aktualizuj plik `todo.md` w katalogu głównym projektu, utrzymując luźną, ale uporządkowaną listę otwartych tematów roboczych."
+
 policy:
   allow_implicit_invocation: true
