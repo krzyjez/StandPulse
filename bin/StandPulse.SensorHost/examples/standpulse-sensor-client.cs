@@ -22,12 +22,14 @@ public sealed class StandPulseSensorClient
 
   private readonly string _serverName;
   private readonly string _pipeName;
+  private readonly TimeSpan _connectTimeout;
 
-  /// <summary>Tworzy klienta dla lokalnego pipe StandPulse.Sensor.</summary>
-  public StandPulseSensorClient(string pipeName = "StandPulse.Sensor", string serverName = ".")
+  /// <summary>Tworzy klienta dla lokalnego pipe StandPulse.Sensor; bez działającego hosta połączenie kończy się TimeoutException po connectTimeout (domyślnie 5 s).</summary>
+  public StandPulseSensorClient(string pipeName = "StandPulse.Sensor", string serverName = ".", TimeSpan? connectTimeout = null)
   {
     _pipeName = pipeName;
     _serverName = serverName;
+    _connectTimeout = connectTimeout ?? TimeSpan.FromSeconds(5);
   }
 
   /// <summary>Pobiera aktualny snapshot statusu z hosta sensora.</summary>
@@ -78,8 +80,16 @@ public sealed class StandPulseSensorClient
       PipeDirection.InOut,
       PipeOptions.Asynchronous);
 
-    await pipe.ConnectAsync(cancellationToken);
-    return pipe;
+    try
+    {
+      await pipe.ConnectAsync(_connectTimeout, cancellationToken);
+      return pipe;
+    }
+    catch
+    {
+      pipe.Dispose();
+      throw;
+    }
   }
 
   // Parsuje pojedynczą linię JSON ze snapshotem statusu.
@@ -87,6 +97,18 @@ public sealed class StandPulseSensorClient
   {
     if (string.IsNullOrWhiteSpace(line))
       throw new InvalidDataException("StandPulse.SensorHost returned an empty response.");
+
+    // Odpowiedź innego typu (np. error) zdeserializowałaby się po cichu jako status presence.
+    using (var document = JsonDocument.Parse(line))
+    {
+      var root = document.RootElement;
+      var type = root.TryGetProperty("type", out var typeProperty) ? typeProperty.GetString() : null;
+      if (type != "status")
+      {
+        var message = root.TryGetProperty("message", out var messageProperty) ? messageProperty.GetString() : null;
+        throw new InvalidDataException($"StandPulse.SensorHost returned '{type ?? "-"}' instead of status: {message ?? line}");
+      }
+    }
 
     var snapshot = JsonSerializer.Deserialize<StandPulseSensorSnapshot>(line, JsonOptions);
     return snapshot ?? throw new InvalidDataException("StandPulse.SensorHost returned an invalid status response.");
@@ -101,7 +123,8 @@ public sealed record StandPulseSensorSnapshot(
   StandPulseWindowsSessionStatus SessionStatus,
   bool WorkPresence,
   DateTimeOffset? LastSampleAt,
-  DateTimeOffset StableSince);
+  DateTimeOffset StableSince,
+  DateTimeOffset WorkPresenceSince);
 
 /// <summary>Stabilny status obecności udostępniany aplikacjom przez StandPulse.SensorHost.</summary>
 public enum StandPulseSensorStatus

@@ -14,13 +14,13 @@ Host uruchamia się komendą:
 .\StandPulse.SensorHost.exe run
 ```
 
-Tryb diagnostyczny działa jak `run`, ale zapisuje zdarzenia operacyjne hosta do pliku logu:
+Tryb `debug` działa tak samo jak `run`. Obie komendy zapisują zdarzenia operacyjne hosta do pliku logu, a nazwy `debug` używa autostart:
 
 ```powershell
 .\StandPulse.SensorHost.exe debug
 ```
 
-Tryb śledzenia działa jak `debug`, ale dodatkowo zapisuje surowe linie i próbki sensora. Używaj go tylko do krótkiej diagnostyki:
+Tryb śledzenia działa jak `run`, ale dodatkowo zapisuje surowe linie i próbki sensora. Używaj go tylko do krótkiej diagnostyki:
 
 ```powershell
 .\StandPulse.SensorHost.exe trace
@@ -31,6 +31,10 @@ Po starcie program wypisuje na konsoli ścieżkę logu. Jeden log operacyjny jes
 ```text
 %LOCALAPPDATA%\StandPulse\SensorHost\logs\sensorhost.log
 ```
+
+Gdy log przekroczy 5 MB, program przenosi go do `sensorhost.log.1` i zaczyna nowy plik.
+
+Program można uruchomić tylko raz dla danej nazwy pipe. Drugie uruchomienie kończy się komunikatem `StandPulse.SensorHost już działa dla pipe ...`. Ctrl+C zatrzymuje program i wyłącza aktywne efektory.
 
 Bez argumentów program pokazuje pomoc i kończy działanie:
 
@@ -100,11 +104,14 @@ Najważniejsze ustawienia:
 3. `serial.baudRate` - prędkość portu, domyślnie `115200`.
 4. `presence.maxDistanceCm` - maksymalna odległość uznawana za obecność przy biurku.
 5. `presence.stateChangeDelaySeconds` - minimalny czas utrzymania nowego stanu przed publikacją zmiany.
-6. `presence.sampleTimeoutSeconds` - czas bez poprawnej próbki po którym status przechodzi w `sensorNotAvailable`.
+6. `presence.sampleTimeoutSeconds` - czas bez żadnej wiadomości z sensora, po którym status przechodzi w `sensorNotAvailable`.
 7. `presence.maxConsecutiveSensorErrors` - liczba kolejnych błędów firmware po której status przechodzi w `error`.
 8. `presence.maxStartupInvalidLines` - liczba niepoprawnych linii przed pierwszą poprawną wiadomością, po której status przechodzi w `error`.
 9. `pipe.name` - nazwa Windows Named Pipe, domyślnie `StandPulse.Sensor`.
 10. `effectors.directory` - katalog z plikami JSON opisującymi zewnętrzne efektory, domyślnie `effectors`.
+11. `log.directory` - opcjonalny katalog logu; brak oznacza `%LOCALAPPDATA%\StandPulse\SensorHost\logs`.
+
+Jeśli `sensor-settings.json` ma błąd składni (np. przecinek na końcu), program nie startuje i wypisuje przyczynę. Niepoprawna pojedyncza wartość jest zastępowana domyślną, a w logu pojawia się ostrzeżenie `Konfiguracja: ...`.
 
 Efektory są definiowane w osobnych plikach:
 
@@ -146,7 +153,7 @@ sensor presence + odblokowana sesja Windows -> Shelly ON
 sensor absence/sensorNotAvailable/error albo zablokowana sesja Windows -> Shelly OFF
 ```
 
-Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę efektorów i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Efektor Shelly okresowo odczytuje realny stan `switch:0.output` i koryguje gniazdko, jeżeli różni się ono od decyzji systemu. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF` do aktywnych efektorów.
+Zmiana `presence -> absence` korzysta z tej samej stabilizacji co publiczny status sensora, czyli z `presence.stateChangeDelaySeconds`. Blokada sesji Windows jest sprawdzana cyklicznie przez automatykę efektorów i zwykle prowadzi do wyłączenia przy następnym przebiegu pętli. Efektor Shelly okresowo odczytuje realny stan `switch:0.output` i koryguje gniazdko, jeżeli różni się ono od decyzji systemu. Przy kończeniu procesu host próbuje wysłać bezpieczne `OFF` do aktywnych efektorów. Nieudaną komendę Shelly host ponawia z rosnącym odstępem, najwyżej co 5 minut.
 
 Klucz Cloud API nie powinien być zapisywany w pliku efektora. Dla domyślnej konfiguracji ustaw go w profilu użytkownika:
 
@@ -164,6 +171,8 @@ Host publikuje cztery statusy:
 4. `error` - host wykrył powtarzalny błąd firmware sensora.
 
 Pojedyncza błędna linia z COM jest logowana, ale nie zmienia publicznego statusu.
+
+Przy trwałym błędzie odczytu radaru status zostaje `error`. Status `sensorNotAvailable` oznacza, że port jest niedostępny albo sensor przestał cokolwiek wysyłać.
 
 Przed pierwszą poprawną wiadomością host ignoruje krótki szum startowy ESP32 i ucięte linie. Jeśli jednak liczba takich niepoprawnych linii osiągnie `presence.maxStartupInvalidLines`, host publikuje status `error`.
 
@@ -186,7 +195,7 @@ Pobranie aktualnego statusu:
 Przykładowa odpowiedź:
 
 ```json
-{"type":"status","status":"presence","sensorStatus":"presence","sessionStatus":"active","workPresence":true,"lastSampleAt":"2026-05-07T18:40:00.123+02:00","stableSince":"2026-05-07T18:39:50.000+02:00"}
+{"type":"status","status":"presence","sensorStatus":"presence","sessionStatus":"active","workPresence":true,"lastSampleAt":"2026-05-07T18:40:00.123+02:00","stableSince":"2026-05-07T18:39:50.000+02:00","workPresenceSince":"2026-05-07T18:39:50.000+02:00"}
 ```
 
 Pole `status` jest zgodnościowym aliasem `sensorStatus`. Nowe aplikacje powinny czytać:
@@ -194,6 +203,7 @@ Pole `status` jest zgodnościowym aliasem `sensorStatus`. Nowe aplikacje powinny
 1. `sensorStatus` - stabilny stan sensora: `presence`, `absence`, `sensorNotAvailable`, `error`.
 2. `sessionStatus` - stan sesji Windows: `active`, `locked`, `unknown`.
 3. `workPresence` - efektywna obecność robocza używana przez automatykę Shelly.
+4. `workPresenceSince` - od kiedy obowiązuje bieżąca wartość `workPresence`.
 
 Subskrypcja zmian:
 
@@ -215,6 +225,8 @@ Plik można skopiować do innej aplikacji C# i używać metod:
 
 1. `GetStatusAsync()` - pobiera aktualny status.
 2. `WatchAsync()` - odbiera aktualny status i późniejsze zmiany.
+
+Gdy host nie działa, połączenie kończy się `TimeoutException` po 5 s (czas można zmienić parametrem `connectTimeout` konstruktora). Odpowiedź hosta innego typu niż `status` kończy się `InvalidDataException`.
 
 Minimalne użycie:
 

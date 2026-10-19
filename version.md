@@ -1,3 +1,12 @@
+# 0.1.4 2026-10-19 19:52
+- Timeout SensorHost liczony od ostatniej wiadomosci firmware / Trwaly blad radaru zostaje `error` zamiast przeskakiwac co sekunde na `sensorNotAvailable`
+- Uszkodzony `sensor-settings.json` przerywa start z czytelnym bledem / Host nie pracuje po cichu na domyslnym progu, a poprawione wartosci trafiaja do logu jako ostrzezenia
+- Dodano nadzorce zadan, async pipe, blokade drugiej instancji i rotacje logu po 5 MB / Ctrl+C konczy host czysto, a nieoczekiwany wyjatek nie wylacza funkcji bez sladu
+- Shelly ponawia nieudane komendy z backoffem do 5 min i rozpoznaje `isok:false` / Awaria chmury nie zalewa logu ani API
+- Naprawiono wyscig `watch`, odswiezanie `lastSampleAt` i obsluge zlego typu pola w probce / Klient nie gubi zmiany przy subskrypcji, a bledna linia nie zatrzymuje odczytu
+- Klient C# i SensorProbe dostaly `workPresenceSince`, timeout polaczenia i kontrole typu odpowiedzi / Kopiowalny klient nie wisi bez hosta
+- Skrypty publikacji buduja w katalogu tymczasowym, a scenariusze fake sa odciete od Shelly i rozszerzone do 10 / Nieudany build nie rozbiera paczki w `bin` i nie daje falszywego OK
+
 # 0.1.3 2026-06-08 14:00
 - Dodano `workPresenceSince` do snapshotu SensorHost / Klienci moga odroznic czas obecnosci roboczej od stabilizacji fizycznego sensora
 - Rozszerzono log SensorHost o pelne znaczniki czasu / Zmiany statusu sa diagnozowalne bez dopasowywania samej godziny

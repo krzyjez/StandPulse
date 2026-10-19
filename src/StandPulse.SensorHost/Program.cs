@@ -31,9 +31,45 @@ internal static class Program
       return 0;
     }
 
-    var settings = HostSettings.Load();
-    using var logger = SensorHostLogger.Create(traceEnabled);
+    var settingsWarnings = new List<string>();
+    HostSettings settings;
+    try
+    {
+      settings = HostSettings.Load(settingsWarnings);
+    }
+    catch (InvalidDataException ex)
+    {
+      // Uszkodzona konfiguracja zatrzymuje start, bo cicha praca na wartościach domyślnych dawała fałszywe przerwy.
+      _WriteStartupFailure(ex.Message, null);
+      return 1;
+    }
+
+    using var instanceMutex = new Mutex(true, $"Local\\StandPulse.SensorHost.{settings.Pipe.Name}", out var isFirstInstance);
+    if (!isFirstInstance)
+    {
+      _WriteStartupFailure($"StandPulse.SensorHost już działa dla pipe {settings.Pipe.Name}.", settings.Log.Directory);
+      return 3;
+    }
+
+    SensorHostLogger logger;
+    try
+    {
+      logger = SensorHostLogger.Create(traceEnabled, settings.Log.Directory);
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+      _WriteStartupFailure($"Nie można otworzyć logu hosta: {ex.Message}", null);
+      return 4;
+    }
+
+    using var ownedLogger = logger;
     Action<string> writeLog = logger.WriteLine;
+    foreach (var warning in settingsWarnings)
+    {
+      writeLog($"Konfiguracja: {warning}");
+      _WriteConsoleLog($"Konfiguracja: {warning}");
+    }
+
     var effectors = EffectorDefinition.LoadAll(settings.Effectors.Directory, writeLog);
     using var effectorShutdownGuard = EffectorShutdownGuard.Create(effectors, writeLog);
     var store = new SensorStateStore(writeLog);
@@ -57,8 +93,34 @@ internal static class Program
     _WriteConsoleLog($"Effectors: {effectors.Count}");
     _WriteConsoleLog("Naciśnij Ctrl+C, aby zakończyć.");
 
-    await host.RunAsync(cancellation.Token);
+    try
+    {
+      await host.RunAsync(cancellation.Token);
+    }
+    catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+    {
+    }
+
+    _WriteConsoleLog("Host zatrzymany.");
     return 0;
+  }
+
+  // Zgłasza przerwany start na konsoli i, jeśli się da, w logu hosta.
+  private static void _WriteStartupFailure(string message, string? logDirectory)
+  {
+    var line = SensorHostLogger.FormatLine($"Start przerwany: {message}");
+    Console.Error.WriteLine(line);
+
+    try
+    {
+      var path = SensorHostLogger.GetLogPath(logDirectory);
+      Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+      File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+      // Log bywa zajęty przez działający host; komunikat na konsoli wystarcza.
+    }
   }
 
   // Sprawdza, czy host ma przejść w normalny tryb pracy ciągłej.
@@ -126,8 +188,8 @@ internal static class Program
     Console.WriteLine("  StandPulse.SensorHost.exe doc");
     Console.WriteLine();
     Console.WriteLine("Komendy:");
-    Console.WriteLine("  run    Uruchamia hosta sensora.");
-    Console.WriteLine("  debug  Uruchamia hosta sensora z logowaniem operacyjnym do pliku.");
+    Console.WriteLine("  run    Uruchamia hosta sensora z logiem operacyjnym w pliku.");
+    Console.WriteLine("  debug  Działa tak samo jak run; tej nazwy używa autostart.");
     Console.WriteLine("  trace  Uruchamia hosta sensora z dodatkowym logowaniem surowych linii i probek.");
     Console.WriteLine("  help   Pokazuje tę pomoc. Brak argumentów także pokazuje pomoc.");
     Console.WriteLine("  doc    Wypisuje ścieżkę do dokumentacji Markdown obok programu.");
@@ -168,27 +230,46 @@ internal sealed class SensorHostService
   /// <summary>Uruchamia odczyt sensora, kontrolę timeoutu i serwer named pipe.</summary>
   public async Task RunAsync(CancellationToken cancellationToken)
   {
-    var sourceTask = Task.Factory.StartNew(
-      () => _ReadSamplesAsync(cancellationToken),
-      cancellationToken,
-      TaskCreationOptions.LongRunning,
-      TaskScheduler.Default).Unwrap();
-    var pipeTask = Task.Factory.StartNew(
-      () => _RunPipeServer(cancellationToken),
-      cancellationToken,
-      TaskCreationOptions.LongRunning,
-      TaskScheduler.Default);
-
     var tasks = new List<Task>
     {
-      sourceTask,
-      _WatchSampleTimeoutAsync(cancellationToken),
-      _WatchWindowsSessionAsync(cancellationToken),
-      pipeTask,
-      _RunEffectorAutomationAsync(cancellationToken)
+      // Odczyt COM blokuje wątek na ReadLine, dlatego dostaje osobny wątek.
+      _RunSupervisedAsync(
+        "sensor",
+        token => Task.Factory.StartNew(
+          () => _ReadSamplesAsync(token),
+          token,
+          TaskCreationOptions.LongRunning,
+          TaskScheduler.Default).Unwrap(),
+        cancellationToken),
+      _RunSupervisedAsync("timeout", _WatchSampleTimeoutAsync, cancellationToken),
+      _RunSupervisedAsync("session", _WatchWindowsSessionAsync, cancellationToken),
+      _RunSupervisedAsync("pipe", _RunPipeServerAsync, cancellationToken),
+      _RunSupervisedAsync("effectors", _RunEffectorAutomationAsync, cancellationToken)
     };
 
     await Task.WhenAll(tasks);
+  }
+
+  // Loguje nieoczekiwany wyjątek zadania i uruchamia je ponownie, żeby host w autostarcie nie tracił funkcji po cichu.
+  private async Task _RunSupervisedAsync(string name, Func<CancellationToken, Task> run, CancellationToken cancellationToken)
+  {
+    while (!cancellationToken.IsCancellationRequested)
+    {
+      try
+      {
+        await run(cancellationToken);
+        return;
+      }
+      catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+      {
+        return;
+      }
+      catch (Exception ex)
+      {
+        _WriteOperationalLog($"Nieoczekiwany błąd zadania {name}, ponawiam: {ex}");
+        await _DelayBeforeRetryAsync(cancellationToken);
+      }
+    }
   }
 
   // Uruchamia automatykę efektorów niezależnie od odczytu sensora i serwera pipe.
@@ -239,11 +320,12 @@ internal sealed class SensorHostService
       {
         return;
       }
-      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
       {
+        // ArgumentException oznacza niepoprawną nazwę portu w konfiguracji.
         _WriteOperationalLog($"Sensor niedostępny: {ex.Message}");
         _store.SetTechnicalStatus(SensorStatus.SensorNotAvailable);
-        await _DelayBeforeReconnectAsync(cancellationToken);
+        await _DelayBeforeRetryAsync(cancellationToken);
       }
     }
   }
@@ -268,6 +350,7 @@ internal sealed class SensorHostService
       {
         _receivedValidSensorMessage = true;
         _startupInvalidLineCount = 0;
+        _store.RecordFirmwareMessage();
         _WriteDebug($"EVENT event={firmwareEvent.Event}");
         if (firmwareEvent.Event == "radar_read_error")
         {
@@ -317,8 +400,9 @@ internal sealed class SensorHostService
         TimeSpan.FromSeconds(_settings.Presence.StateChangeDelaySeconds));
       _WriteDebug($"STATE {_FormatDebugState()}");
     }
-    catch (JsonException ex)
+    catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
     {
+      // Zły typ pola w poprawnym składniowo JSON rzuca InvalidOperationException albo FormatException.
       _WriteDebug($"PARSE_ERROR message=\"{_EscapeForLog(ex.Message)}\" source=\"{_EscapeForLog(line)}\"");
       if (_receivedValidSensorMessage)
         _WriteOperationalLog($"Błąd parsowania próbki: {ex.Message}");
@@ -399,14 +483,14 @@ internal sealed class SensorHostService
       CommandJsonOptions);
   }
 
-  // Ustawia stan techniczny, gdy sensor przestaje dostarczać aktualne próbki.
+  // Ustawia stan techniczny, gdy sensor przestaje wysyłać jakiekolwiek wiadomości.
   private async Task _WatchSampleTimeoutAsync(CancellationToken cancellationToken)
   {
     using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
     var timeout = TimeSpan.FromSeconds(_settings.Presence.SampleTimeoutSeconds);
 
     while (await timer.WaitForNextTickAsync(cancellationToken))
-      _store.MarkUnavailableIfSampleExpired(timeout);
+      _store.MarkUnavailableIfSensorSilent(timeout);
   }
 
   // Odświeża stan sesji Windows i publikuje lock/unlock przez pipe.
@@ -419,34 +503,44 @@ internal sealed class SensorHostService
       _store.RecordSessionStatus(WindowsSessionProbe.GetStatus());
   }
 
-  // Przyjmuje klientów named pipe w przewidywalnej pętli blokującej.
-  private void _RunPipeServer(CancellationToken cancellationToken)
+  // Przyjmuje klientów named pipe; oczekiwanie na połączenie przerywa się przy zamykaniu hosta.
+  private async Task _RunPipeServerAsync(CancellationToken cancellationToken)
   {
     while (!cancellationToken.IsCancellationRequested)
     {
-      var pipe = new NamedPipeServerStream(
-        _settings.Pipe.Name,
-        PipeDirection.InOut,
-        NamedPipeServerStream.MaxAllowedServerInstances,
-        PipeTransmissionMode.Byte,
-        PipeOptions.None);
+      NamedPipeServerStream? pipe = null;
 
       try
       {
-        pipe.WaitForConnection();
+        pipe = new NamedPipeServerStream(
+          _settings.Pipe.Name,
+          PipeDirection.InOut,
+          NamedPipeServerStream.MaxAllowedServerInstances,
+          PipeTransmissionMode.Byte,
+          PipeOptions.Asynchronous);
+
+        await pipe.WaitForConnectionAsync(cancellationToken);
+        var connectedPipe = pipe;
+        pipe = null;
         _ = Task.Factory.StartNew(
-          () => _HandlePipeClientSafely(pipe, cancellationToken),
-          cancellationToken,
+          () => _HandlePipeClientSafely(connectedPipe, cancellationToken),
+          CancellationToken.None,
           TaskCreationOptions.LongRunning,
           TaskScheduler.Default);
       }
-    catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
-    {
-      pipe.Dispose();
-      if (!cancellationToken.IsCancellationRequested)
+      catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+      {
+        pipe?.Dispose();
+        return;
+      }
+      catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException or UnauthorizedAccessException)
+      {
+        pipe?.Dispose();
         _WriteOperationalLog($"Błąd serwera pipe: {ex.Message}");
+        // Przerwa chroni przed gorącą pętlą, gdy pipe nie daje się utworzyć.
+        await _DelayBeforeRetryAsync(cancellationToken);
+      }
     }
-  }
   }
 
   // Loguje błędy pojedynczego klienta pipe bez zatrzymywania hosta.
@@ -455,6 +549,10 @@ internal sealed class SensorHostService
     try
     {
       _HandlePipeClient(pipe, cancellationToken);
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+      // Zamykanie hosta kończy subskrypcje watch; pipe zamyka using w _HandlePipeClient.
     }
     catch (Exception ex) when (ex is IOException or ObjectDisposedException or JsonException or InvalidOperationException)
     {
@@ -485,8 +583,10 @@ internal sealed class SensorHostService
 
     if (command?.Command == "watch")
     {
+      // Subskrypcja przed snapshotem, żeby zmiana między nimi nie przepadła; najwyżej przyjdzie dwa razy.
+      using var subscription = _store.Subscribe();
       _WriteStatus(writer, _store.GetSnapshot());
-      _WatchStatusChanges(writer, cancellationToken);
+      _WatchStatusChanges(writer, subscription, cancellationToken);
       return;
     }
 
@@ -494,21 +594,12 @@ internal sealed class SensorHostService
   }
 
   // Wysyła klientowi kolejne zmiany stabilnego statusu.
-  private void _WatchStatusChanges(StreamWriter writer, CancellationToken cancellationToken)
+  private static void _WatchStatusChanges(StreamWriter writer, SensorStateStore.SensorSubscription subscription, CancellationToken cancellationToken)
   {
-    var subscription = _store.Subscribe();
-
-    try
+    while (subscription.Reader.WaitToReadAsync(cancellationToken).AsTask().GetAwaiter().GetResult())
     {
-      while (subscription.Reader.WaitToReadAsync(cancellationToken).AsTask().GetAwaiter().GetResult())
-      {
-        while (subscription.Reader.TryRead(out var snapshot))
-          _WriteStatus(writer, snapshot);
-      }
-    }
-    finally
-    {
-      subscription.Dispose();
+      while (subscription.Reader.TryRead(out var snapshot))
+        _WriteStatus(writer, snapshot);
     }
   }
 
@@ -519,8 +610,8 @@ internal sealed class SensorHostService
     writer.WriteLine(json);
   }
 
-  // Czeka przed ponowną próbą połączenia z portem COM.
-  private static async Task _DelayBeforeReconnectAsync(CancellationToken cancellationToken)
+  // Czeka przed ponowną próbą po błędzie portu COM, pipe albo zadania hosta.
+  private static async Task _DelayBeforeRetryAsync(CancellationToken cancellationToken)
   {
     try
     {
@@ -738,6 +829,9 @@ internal sealed record ShellyPlugConnectionSettings(
 
 internal sealed class EffectorAutomationService
 {
+  // Górny limit backoffu ogranicza ruch do Shelly Cloud i log przy trwałej awarii.
+  private const double MaxRetryDelaySeconds = 300;
+
   private readonly IReadOnlyList<EffectorDefinition> _effectors;
   private readonly SensorStateStore _store;
   private readonly Action<string> _writeLog;
@@ -816,11 +910,15 @@ internal sealed class EffectorAutomationService
     bool? lastAppliedOutput = null;
     var stateCheckInterval = TimeSpan.FromSeconds(settings.StateCheckIntervalSeconds);
     var nextStateCheckAt = DateTimeOffset.Now + stateCheckInterval;
+    var failureCount = 0;
+    var nextAttemptAt = DateTimeOffset.MinValue;
+    bool? failedOutput = null;
     _writeLog($"Effector {effector.Name}: automatyka Shelly Plug uruchomiona.");
 
     try
     {
       lastAppliedOutput = await _ApplyDecisionAsync(effector, client, snapshot, lastAppliedOutput, false, cancellationToken);
+      TrackFailure(DateTimeOffset.Now);
 
       while (await timer.WaitForNextTickAsync(cancellationToken))
       {
@@ -828,8 +926,13 @@ internal sealed class EffectorAutomationService
           snapshot = changedSnapshot;
 
         var now = DateTimeOffset.Now;
+        // Po nieudanej komendzie czekamy z ponowieniem, chyba że zmienił się oczekiwany stan gniazdka.
+        if (now < nextAttemptAt && effector.ShouldTurnOn(snapshot) == failedOutput)
+          continue;
+
         var shouldVerifyState = now >= nextStateCheckAt;
         lastAppliedOutput = await _ApplyDecisionAsync(effector, client, snapshot, lastAppliedOutput, shouldVerifyState, cancellationToken);
+        TrackFailure(now);
 
         if (shouldVerifyState)
           nextStateCheckAt = now + stateCheckInterval;
@@ -839,6 +942,25 @@ internal sealed class EffectorAutomationService
     {
       if (cancellationToken.IsCancellationRequested)
         await client.SetOutputAsync(false, CancellationToken.None);
+    }
+
+    // Liczy kolejne nieudane komendy i wyznacza wykładniczy odstęp do następnej próby.
+    void TrackFailure(DateTimeOffset now)
+    {
+      var desiredOutput = effector.ShouldTurnOn(snapshot);
+      if (lastAppliedOutput == desiredOutput)
+      {
+        failureCount = 0;
+        failedOutput = null;
+        nextAttemptAt = DateTimeOffset.MinValue;
+        return;
+      }
+
+      failureCount++;
+      failedOutput = desiredOutput;
+      var delay = TimeSpan.FromSeconds(Math.Min(Math.Pow(2, failureCount), MaxRetryDelaySeconds));
+      nextAttemptAt = now + delay;
+      _writeLog($"Effector {effector.Name}: nieudana komenda {failureCount} raz z rzędu, kolejna próba za {delay.TotalSeconds:0} s.");
     }
   }
 
@@ -915,16 +1037,25 @@ internal sealed class ShellyCloudClient
         ]);
 
         using var response = await _httpClient.PostAsync("/device/relay/control", content, cancellationToken);
-        if (response.IsSuccessStatusCode)
-          return true;
+        if (!response.IsSuccessStatusCode)
+        {
+          _writeLog($"Effector {_effectorName}: Shelly Cloud HTTP {(int)response.StatusCode} przy turn={turn}, próba {attempt}.");
+        }
+        else
+        {
+          await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+          using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+          if (!_TryGetCloudError(document.RootElement, out var cloudError))
+            return true;
 
-        _writeLog($"Effector {_effectorName}: Shelly Cloud HTTP {(int)response.StatusCode} przy turn={turn}, próba {attempt}.");
+          _writeLog($"Effector {_effectorName}: Shelly Cloud odmowa przy turn={turn}, próba {attempt}: {cloudError}");
+        }
       }
       catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
       {
         throw;
       }
-      catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
+      catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
       {
         _writeLog($"Effector {_effectorName}: Shelly Cloud błąd przy turn={turn}, próba {attempt}: {ex.Message}");
       }
@@ -958,10 +1089,12 @@ internal sealed class ShellyCloudClient
         {
           await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
           using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-          if (_TryReadOutput(document.RootElement, out var output))
+          if (_TryGetCloudError(document.RootElement, out var cloudError))
+            _writeLog($"Effector {_effectorName}: Shelly Cloud odmowa przy status, próba {attempt}: {cloudError}");
+          else if (_TryReadOutput(document.RootElement, out var output))
             return output;
-
-          _writeLog($"Effector {_effectorName}: Shelly Cloud brak switch:{_settings.Channel}.output w statusie, próba {attempt}.");
+          else
+            _writeLog($"Effector {_effectorName}: Shelly Cloud brak switch:{_settings.Channel}.output w statusie, próba {attempt}.");
         }
       }
       catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -978,6 +1111,19 @@ internal sealed class ShellyCloudClient
     }
 
     return null;
+  }
+
+  // Shelly Cloud zgłasza błędy logiczne (np. urządzenie offline) przez HTTP 200 z isok=false.
+  private static bool _TryGetCloudError(JsonElement root, out string error)
+  {
+    error = "";
+    if (root.ValueKind != JsonValueKind.Object ||
+        !root.TryGetProperty("isok", out var isOk) ||
+        isOk.ValueKind != JsonValueKind.False)
+      return false;
+
+    error = root.TryGetProperty("errors", out var errors) ? errors.GetRawText() : "isok=false";
+    return true;
   }
 
   // Wyciąga output z odpowiedzi Shelly Cloud device/status.
@@ -1147,6 +1293,8 @@ internal sealed class SensorStateStore
   private SensorStatus? _candidateStatus;
   private DateTimeOffset? _candidateSince;
   private DateTimeOffset? _lastSampleAt;
+  // Czas ostatniej dowolnej wiadomości z firmware; zdarzenia błędu też dowodzą, że łącze żyje.
+  private DateTimeOffset? _lastMessageAt;
 
   /// <summary>Tworzy magazyn stanu z opcjonalnym miejscem zapisu komunikatów statusu.</summary>
   public SensorStateStore(Action<string>? writeLog = null)
@@ -1188,6 +1336,9 @@ internal sealed class SensorStateStore
     lock (_syncRoot)
     {
       _lastSampleAt = now;
+      _lastMessageAt = now;
+      // Świeżość próbki jest widoczna w get od razu, bez publikowania zdarzenia watch.
+      _snapshot = _snapshot with { LastSampleAt = now };
 
       if (_candidateStatus != sampleStatus)
       {
@@ -1215,30 +1366,22 @@ internal sealed class SensorStateStore
       else
       {
         var stableFor = now - (_candidateSince ?? now);
-        if (stableFor >= stateChangeDelay)
+        if (stableFor >= stateChangeDelay && _snapshot.Status != sampleStatus)
         {
-          if (_snapshot.Status == sampleStatus)
+          var previousStatus = _snapshot.Status;
+          var previousWorkPresence = _snapshot.WorkPresence;
+          var nextSnapshot = _snapshot with
           {
-            _snapshot = _snapshot with { LastSampleAt = _lastSampleAt };
-          }
-          else
-          {
-            var previousStatus = _snapshot.Status;
-            var previousWorkPresence = _snapshot.WorkPresence;
-            var nextSnapshot = _snapshot with
-            {
-              Status = sampleStatus,
-              LastSampleAt = _lastSampleAt,
-              StableSince = _candidateSince ?? now
-            };
-            if (nextSnapshot.WorkPresence != previousWorkPresence)
-              nextSnapshot = nextSnapshot with { WorkPresenceSince = _candidateSince ?? now };
+            Status = sampleStatus,
+            StableSince = _candidateSince ?? now
+          };
+          if (nextSnapshot.WorkPresence != previousWorkPresence)
+            nextSnapshot = nextSnapshot with { WorkPresenceSince = _candidateSince ?? now };
 
-            _snapshot = nextSnapshot;
-            changedSnapshot = _snapshot;
-            changedSampleDecision = sampleDecision;
-            transitionLog = _FormatStateChangeLog(previousStatus, sampleStatus, stableFor, sampleDecision);
-          }
+          _snapshot = nextSnapshot;
+          changedSnapshot = _snapshot;
+          changedSampleDecision = sampleDecision;
+          transitionLog = _FormatStateChangeLog(previousStatus, sampleStatus, stableFor, sampleDecision);
         }
       }
     }
@@ -1308,18 +1451,25 @@ internal sealed class SensorStateStore
       _Publish(changedSnapshot, null, $"session change {_FormatStatusLog(changedSnapshot, null)}");
   }
 
-  /// <summary>Oznacza sensor jako niedostępny, jeśli ostatnia próbka jest zbyt stara.</summary>
-  public void MarkUnavailableIfSampleExpired(TimeSpan timeout)
+  /// <summary>Rejestruje zdarzenie techniczne firmware jako dowód, że łącze z sensorem żyje.</summary>
+  public void RecordFirmwareMessage()
   {
-    DateTimeOffset? lastSampleAt;
+    lock (_syncRoot)
+      _lastMessageAt = DateTimeOffset.Now;
+  }
+
+  /// <summary>Oznacza sensor jako niedostępny, jeśli od ostatniej wiadomości firmware minął timeout; trwałe błędy radaru zostają jako error.</summary>
+  public void MarkUnavailableIfSensorSilent(TimeSpan timeout)
+  {
+    DateTimeOffset? lastMessageAt;
 
     lock (_syncRoot)
-      lastSampleAt = _lastSampleAt;
+      lastMessageAt = _lastMessageAt;
 
-    if (lastSampleAt is null)
+    if (lastMessageAt is null)
       return;
 
-    if (DateTimeOffset.Now - lastSampleAt.Value > timeout)
+    if (DateTimeOffset.Now - lastMessageAt.Value > timeout)
       SetTechnicalStatus(SensorStatus.SensorNotAvailable);
   }
 
@@ -1426,8 +1576,12 @@ internal sealed class SensorStateStore
 
 internal sealed class SensorHostLogger : IDisposable
 {
+  // Limit chroni dysk przed logiem autostartu rosnącym bez końca przy awariach.
+  private const long MaxLogBytes = 5 * 1024 * 1024;
+  private const string LogFileName = "sensorhost.log";
+
   private readonly object _syncRoot = new();
-  private readonly StreamWriter _writer;
+  private StreamWriter _writer;
 
   // Zachowuje otwarty plik logu operacyjnego dla procesu hosta.
   private SensorHostLogger(string path, StreamWriter writer, bool traceEnabled)
@@ -1441,32 +1595,71 @@ internal sealed class SensorHostLogger : IDisposable
 
   public bool TraceEnabled { get; }
 
-  /// <summary>Tworzy albo otwiera pojedynczy log operacyjny hosta.</summary>
-  public static SensorHostLogger Create(bool traceEnabled)
+  /// <summary>Tworzy albo otwiera pojedynczy log operacyjny hosta w katalogu z konfiguracji albo domyślnym.</summary>
+  public static SensorHostLogger Create(bool traceEnabled, string? directory)
   {
-    var directory = System.IO.Path.Combine(
-      Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-      "StandPulse",
-      "SensorHost",
-      "logs");
-    Directory.CreateDirectory(directory);
+    var path = GetLogPath(directory);
+    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+    _ArchiveIfTooLarge(path);
 
-    var path = System.IO.Path.Combine(directory, "sensorhost.log");
-    var writer = new StreamWriter(path, append: true, new UTF8Encoding(false))
-    {
-      AutoFlush = true
-    };
-
-    var logger = new SensorHostLogger(path, writer, traceEnabled);
+    var logger = new SensorHostLogger(path, _OpenWriter(path), traceEnabled);
     logger.WriteLine($"Host log started trace={traceEnabled}.");
     return logger;
+  }
+
+  /// <summary>Zwraca ścieżkę logu dla katalogu z konfiguracji; pusty katalog oznacza %LOCALAPPDATA%.</summary>
+  public static string GetLogPath(string? directory)
+  {
+    var resolvedDirectory = string.IsNullOrWhiteSpace(directory)
+      ? System.IO.Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "StandPulse",
+        "SensorHost",
+        "logs")
+      : System.IO.Path.IsPathRooted(directory)
+        ? directory
+        : System.IO.Path.Combine(AppContext.BaseDirectory, directory);
+
+    return System.IO.Path.Combine(resolvedDirectory, LogFileName);
   }
 
   /// <summary>Zapisuje jedną linię logu z lokalnym znacznikiem czasu.</summary>
   public void WriteLine(string message)
   {
     lock (_syncRoot)
+    {
       _writer.WriteLine(FormatLine(message));
+      if (_writer.BaseStream.Length > MaxLogBytes)
+      {
+        _writer.Dispose();
+        _ArchiveIfTooLarge(Path);
+        _writer = _OpenWriter(Path);
+      }
+    }
+  }
+
+  // Otwiera log w trybie dopisywania z natychmiastowym zapisem na dysk.
+  private static StreamWriter _OpenWriter(string path)
+  {
+    return new StreamWriter(path, append: true, new UTF8Encoding(false))
+    {
+      AutoFlush = true
+    };
+  }
+
+  // Przenosi zbyt duży log do jednej kopii .1, żeby zachować ostatnią historię.
+  private static void _ArchiveIfTooLarge(string path)
+  {
+    try
+    {
+      var file = new FileInfo(path);
+      if (file.Exists && file.Length > MaxLogBytes)
+        File.Move(path, path + ".1", overwrite: true);
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+      // Zablokowana kopia .1 nie może zatrzymać hosta; log pisze dalej do bieżącego pliku.
+    }
   }
 
   /// <summary>Formatuje linię logu hosta z krótką sygnaturą czasu.</summary>
@@ -1582,42 +1775,51 @@ internal sealed record HostSettings(
   PresenceSettings Presence,
   PipeSettings Pipe,
   FakeSensorSettings Fake,
-  EffectorsSettings Effectors)
+  EffectorsSettings Effectors,
+  LogSettings Log)
 {
-  /// <summary>Wczytuje konfigurację hosta z pliku sensor-settings.json.</summary>
-  public static HostSettings Load()
+  /// <summary>Wczytuje konfigurację hosta z pliku sensor-settings.json; uszkodzony plik zgłasza InvalidDataException, a poprawione wartości trafiają do warnings.</summary>
+  public static HostSettings Load(List<string> warnings)
   {
-    var defaults = Default;
     var path = Path.Combine(AppContext.BaseDirectory, "sensor-settings.json");
 
     if (!File.Exists(path))
-      return defaults;
+    {
+      warnings.Add($"brak pliku '{path}', używam ustawień domyślnych.");
+      return Default;
+    }
 
+    HostSettings? loaded;
     try
     {
       var json = File.ReadAllText(path);
-      var loaded = JsonSerializer.Deserialize<HostSettings>(
+      loaded = JsonSerializer.Deserialize<HostSettings>(
         json,
         new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-
-      return loaded?.Normalize() ?? defaults;
     }
-    catch
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
     {
-      return defaults;
+      throw new InvalidDataException($"Nie udało się wczytać '{path}': {ex.Message}", ex);
     }
+
+    if (loaded is null)
+      throw new InvalidDataException($"Plik '{path}' nie zawiera ustawień.");
+
+    return loaded.Normalize(warnings);
   }
 
+  // Wartości domyślne odpowiadają dostarczonemu sensor-settings.json, żeby brak sekcji nie zmieniał zachowania.
   private static HostSettings Default => new(
     new SensorSourceSettings("serial"),
     new SerialSettings("COM4", 115200),
-    new PresenceSettings(120, 10, 5, 3, 20),
+    new PresenceSettings(200, 10, 5, 3, 20),
     new PipeSettings("StandPulse.Sensor"),
     FakeSensorSettings.Default,
-    new EffectorsSettings("effectors"));
+    new EffectorsSettings("effectors"),
+    new LogSettings(null));
 
-  // Uzupełnia brakujące albo niepoprawne wartości konfiguracji.
-  private HostSettings Normalize()
+  // Uzupełnia brakujące sekcje i zastępuje niepoprawne wartości, zapisując ostrzeżenie dla każdej zamiany.
+  private HostSettings Normalize(List<string> warnings)
   {
     var source = Source ?? Default.Source;
     var serial = Serial ?? Default.Serial;
@@ -1625,36 +1827,70 @@ internal sealed record HostSettings(
     var pipe = Pipe ?? Default.Pipe;
     var fake = Fake ?? Default.Fake;
     var effectors = Effectors ?? Default.Effectors;
+    var log = Log ?? Default.Log;
+
+    void Warn(string name, object? value, object fallback) =>
+      warnings.Add($"niepoprawne {name}='{value}', używam '{fallback}'.");
 
     if (!source.IsSerial && !source.IsFake)
+    {
+      Warn("source.mode", source.Mode, Default.Source.Mode);
       source = Default.Source;
+    }
 
     if (string.IsNullOrWhiteSpace(serial.PortName))
+    {
+      Warn("serial.portName", serial.PortName, Default.Serial.PortName);
       serial = serial with { PortName = Default.Serial.PortName };
+    }
 
     if (serial.BaudRate <= 0)
+    {
+      Warn("serial.baudRate", serial.BaudRate, Default.Serial.BaudRate);
       serial = serial with { BaudRate = Default.Serial.BaudRate };
+    }
 
     if (presence.MaxDistanceCm <= 0)
+    {
+      Warn("presence.maxDistanceCm", presence.MaxDistanceCm, Default.Presence.MaxDistanceCm);
       presence = presence with { MaxDistanceCm = Default.Presence.MaxDistanceCm };
+    }
 
     if (presence.StateChangeDelaySeconds <= 0)
+    {
+      Warn("presence.stateChangeDelaySeconds", presence.StateChangeDelaySeconds, Default.Presence.StateChangeDelaySeconds);
       presence = presence with { StateChangeDelaySeconds = Default.Presence.StateChangeDelaySeconds };
+    }
 
     if (presence.SampleTimeoutSeconds <= 0)
+    {
+      Warn("presence.sampleTimeoutSeconds", presence.SampleTimeoutSeconds, Default.Presence.SampleTimeoutSeconds);
       presence = presence with { SampleTimeoutSeconds = Default.Presence.SampleTimeoutSeconds };
+    }
 
     if (presence.MaxConsecutiveSensorErrors <= 0)
+    {
+      Warn("presence.maxConsecutiveSensorErrors", presence.MaxConsecutiveSensorErrors, Default.Presence.MaxConsecutiveSensorErrors);
       presence = presence with { MaxConsecutiveSensorErrors = Default.Presence.MaxConsecutiveSensorErrors };
+    }
 
     if (presence.MaxStartupInvalidLines <= 0)
+    {
+      Warn("presence.maxStartupInvalidLines", presence.MaxStartupInvalidLines, Default.Presence.MaxStartupInvalidLines);
       presence = presence with { MaxStartupInvalidLines = Default.Presence.MaxStartupInvalidLines };
+    }
 
     if (string.IsNullOrWhiteSpace(pipe.Name))
+    {
+      Warn("pipe.name", pipe.Name, Default.Pipe.Name);
       pipe = pipe with { Name = Default.Pipe.Name };
+    }
 
     if (fake.IntervalMilliseconds <= 0)
+    {
+      Warn("fake.intervalMilliseconds", fake.IntervalMilliseconds, Default.Fake.IntervalMilliseconds);
       fake = fake with { IntervalMilliseconds = Default.Fake.IntervalMilliseconds };
+    }
 
     if (fake.Samples is null || fake.Samples.Count == 0)
       fake = fake with { Samples = Default.Fake.Samples };
@@ -1662,7 +1898,7 @@ internal sealed record HostSettings(
     if (string.IsNullOrWhiteSpace(effectors.Directory))
       effectors = effectors with { Directory = Default.Effectors.Directory };
 
-    return new HostSettings(source, serial, presence, pipe, fake, effectors);
+    return new HostSettings(source, serial, presence, pipe, fake, effectors, log);
   }
 }
 
@@ -1686,6 +1922,9 @@ internal sealed record PresenceSettings(
 internal sealed record PipeSettings(string Name);
 
 internal sealed record EffectorsSettings(string Directory);
+
+// Pusty katalog oznacza domyślny log w %LOCALAPPDATA%; własny katalog pozwala odseparować np. testy fake.
+internal sealed record LogSettings(string? Directory);
 
 internal sealed record FakeSensorSettings(
   int IntervalMilliseconds,

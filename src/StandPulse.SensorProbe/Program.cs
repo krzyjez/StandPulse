@@ -61,7 +61,7 @@ internal static class Program
     {
       return 0;
     }
-    catch (Exception ex) when (ex is IOException or TimeoutException or JsonException)
+    catch (Exception ex) when (ex is IOException or TimeoutException or JsonException or InvalidDataException)
     {
       Console.Error.WriteLine($"Sensor probe error: {ex.Message}");
       return 2;
@@ -90,7 +90,7 @@ internal static class Program
   private static void _WriteSnapshot(SensorSnapshot snapshot)
   {
     var lastSample = snapshot.LastSampleAt?.ToString("O") ?? "-";
-    Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} sensorStatus={snapshot.SensorStatus} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} lastSampleAt={lastSample} stableSince={snapshot.StableSince:O}");
+    Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} sensorStatus={snapshot.SensorStatus} sessionStatus={snapshot.SessionStatus} workPresence={snapshot.WorkPresence} lastSampleAt={lastSample} stableSince={snapshot.StableSince:O} workPresenceSince={snapshot.WorkPresenceSince:O}");
   }
 }
 
@@ -172,7 +172,8 @@ internal sealed record SensorSnapshot(
   WindowsSessionStatus SessionStatus,
   bool WorkPresence,
   DateTimeOffset? LastSampleAt,
-  DateTimeOffset StableSince);
+  DateTimeOffset StableSince,
+  DateTimeOffset WorkPresenceSince);
 
 internal enum SensorStatus
 {

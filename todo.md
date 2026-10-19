@@ -14,6 +14,9 @@ Zakres, który ma największy sens:
 4. test timeoutu próbek prowadzącego do `sensorNotAvailable`,
 5. test serializacji snapshotu `type/status/lastSampleAt/stableSince`,
 6. test kopiowalnego klienta `standpulse-sensor-client.cs` dla `GetStatusAsync` i `WatchAsync`.
+7. test pól automatyki w snapshocie: `sensorStatus`, `sessionStatus`, `workPresence`, `workPresenceSince`,
+8. test reguł efektorów `EffectorDefinition.ShouldTurnOn` i `EffectorCondition.Matches`,
+9. test `HostSettings.Load`/`Normalize` dla uszkodzonego pliku, brakujących sekcji i niepoprawnych wartości.
 
 Testy powinny opierać się głównie o stub/fake źródło próbek, a realny sensor zostawić do ręcznego smoke testu z COM.
 

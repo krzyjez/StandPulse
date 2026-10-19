@@ -21,6 +21,10 @@ if (-not $resolvedTempRoot.StartsWith($resolvedTempBase, [System.StringCompariso
 
 New-Item -ItemType Directory -Path $resolvedTempRoot | Out-Null
 
+# Pusty katalog efektorów odcina fake hosta od prawdziwego gniazdka Shelly.
+$emptyEffectorsDir = Join-Path $resolvedTempRoot "effectors"
+New-Item -ItemType Directory -Path $emptyEffectorsDir | Out-Null
+
 $pipeProbeSource = @'
 using System.Collections.Generic;
 using System.IO;
@@ -90,6 +94,12 @@ function New-FakeSettingsJson {
         pipe = [ordered]@{
             name = $PipeName
         }
+        effectors = [ordered]@{
+            directory = $emptyEffectorsDir
+        }
+        log = [ordered]@{
+            directory = $resolvedTempRoot
+        }
         fake = [ordered]@{
             intervalMilliseconds = 100
             samples = $Samples
@@ -103,19 +113,36 @@ function Assert-ContainsStatusSequence {
     param(
         [string[]]$Statuses,
         [string[]]$Expected,
-        [string]$ScenarioName
+        [string]$ScenarioName,
+        [switch]$StayInLast
     )
 
     $expectedIndex = 0
+    $statusIndex = 0
 
     foreach ($status in $Statuses) {
         if ($expectedIndex -lt $Expected.Count -and $status -eq $Expected[$expectedIndex]) {
             $expectedIndex++
+            if ($expectedIndex -eq $Expected.Count) {
+                break
+            }
         }
+
+        $statusIndex++
     }
 
     if ($expectedIndex -ne $Expected.Count) {
         throw "Scenario '$ScenarioName' failed. Expected sequence: $($Expected -join ', '), got: $($Statuses -join ', ')"
+    }
+
+    # StayInLast pilnuje, że po osiągnięciu ostatniego statusu host już go nie zmienia.
+    if ($StayInLast) {
+        $lastExpected = $Expected[$Expected.Count - 1]
+        for ($i = $statusIndex + 1; $i -lt $Statuses.Count; $i++) {
+            if ($Statuses[$i] -ne $lastExpected) {
+                throw "Scenario '$ScenarioName' failed. Status left '$lastExpected'. Got: $($Statuses -join ', ')"
+            }
+        }
     }
 }
 
@@ -126,7 +153,8 @@ function Invoke-FakeScenario {
         [string[]]$ExpectedSequence,
         [string[]]$ForbiddenStatuses = @(),
         [int]$MaxLines = 4,
-        [int]$ReadTimeoutMs = 5000
+        [int]$ReadTimeoutMs = 5000,
+        [switch]$StayInLast
     )
 
     $pipeName = "StandPulse.Sensor.FakeScenario." + [Guid]::NewGuid().ToString("N")
@@ -159,7 +187,7 @@ function Invoke-FakeScenario {
             }
         )
 
-        Assert-ContainsStatusSequence -Statuses $statuses -Expected $ExpectedSequence -ScenarioName $Name
+        Assert-ContainsStatusSequence -Statuses $statuses -Expected $ExpectedSequence -ScenarioName $Name -StayInLast:$StayInLast
 
         foreach ($forbiddenStatus in $ForbiddenStatuses) {
             if ($statuses -contains $forbiddenStatus) {
@@ -219,6 +247,59 @@ $scenarios = @(
         )
     },
     @{
+        Name = "silent-sensor-becomes-unavailable"
+        ExpectedSequence = @("presence", "sensorNotAvailable")
+        MaxLines = 3
+        Samples = @(
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 14 },
+            [ordered]@{ rawLine = "x"; event = $null; present = $false; targetStatus = "Silent"; distanceCm = $null; repeat = 40 }
+        )
+    },
+    @{
+        Name = "radar-errors-after-presence-stay-error"
+        ExpectedSequence = @("presence", "error")
+        StayInLast = $true
+        MaxLines = 4
+        ReadTimeoutMs = 3000
+        Samples = @(
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 14 },
+            [ordered]@{ event = "radar_read_error"; present = $false; targetStatus = "ErrorFrame"; distanceCm = $null; repeat = 40 }
+        )
+    },
+    @{
+        Name = "invalid-field-type-is-ignored"
+        ExpectedSequence = @("presence")
+        StayInLast = $true
+        MaxLines = 3
+        ReadTimeoutMs = 3000
+        Samples = @(
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 5 },
+            [ordered]@{ rawLine = '{"present":true,"distanceCm":64.5}'; event = $null; present = $false; targetStatus = "BadType"; distanceCm = $null; repeat = 1 },
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 5 },
+            [ordered]@{ rawLine = '{"present":null,"distanceCm":64}'; event = $null; present = $false; targetStatus = "BadType"; distanceCm = $null; repeat = 1 }
+        )
+    },
+    @{
+        Name = "single-radar-errors-are-ignored"
+        ExpectedSequence = @("presence")
+        StayInLast = $true
+        MaxLines = 3
+        ReadTimeoutMs = 3000
+        Samples = @(
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 4 },
+            [ordered]@{ event = "radar_read_error"; present = $false; targetStatus = "ErrorFrame"; distanceCm = $null; repeat = 1 }
+        )
+    },
+    @{
+        Name = "error-recovers-to-presence"
+        ExpectedSequence = @("error", "presence")
+        MaxLines = 3
+        Samples = @(
+            [ordered]@{ event = "radar_read_error"; present = $false; targetStatus = "ErrorFrame"; distanceCm = $null; repeat = 3 },
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 14 }
+        )
+    },
+    @{
         Name = "startup-garbage-becomes-error"
         ExpectedSequence = @("error")
         MaxLines = 2
@@ -230,6 +311,9 @@ $scenarios = @(
 
 try {
     dotnet build $projectPath | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet build failed with exit code $LASTEXITCODE."
+    }
 
     if (Test-Path -LiteralPath $backupPath) {
         Remove-Item -LiteralPath $backupPath -Force
@@ -253,13 +337,16 @@ try {
             $readTimeoutMs = $scenario["ReadTimeoutMs"]
         }
 
+        $stayInLast = $scenario.ContainsKey("StayInLast") -and $scenario["StayInLast"]
+
         Invoke-FakeScenario `
             -Name $scenario["Name"] `
             -Samples $scenario["Samples"] `
             -ExpectedSequence $scenario["ExpectedSequence"] `
             -ForbiddenStatuses $forbiddenStatuses `
             -MaxLines $maxLines `
-            -ReadTimeoutMs $readTimeoutMs
+            -ReadTimeoutMs $readTimeoutMs `
+            -StayInLast:$stayInLast
     }
 
     $results | Format-Table -AutoSize

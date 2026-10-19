@@ -1,3 +1,4 @@
 hooks/logs/
 src/**/bin/
 obj/
+dist/
