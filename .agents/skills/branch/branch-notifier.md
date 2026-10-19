@@ -26,9 +26,9 @@ Komendy `branch start`, `branch step-begin`, `branch flush` i `branch finish` ni
     "silent": false,
     "duration": "short",
     "ignoreWindowTitlePatterns": [
-      "Claude Code",
       "Visual Studio Code",
-      "Codex"
+      "Codex",
+      "Claude Code"
     ]
   }
 }

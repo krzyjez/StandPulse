@@ -1,10 +1,12 @@
 ---
 name: inc-version
 description: Zwiększ numer wersji projektu robiąc wpis do pliku `version.md`
-info: Komenda wspólna. Zakłada ścisły format `version.md`, bo plik może być przetwarzany przez skrypty użytkownika.
-implicit-invocation: false
-version: 4
-modified-date: 2026-07-24
+version: 5
+modified-date: 2026-10-07
+metadata:
+  source_component: "components/common/inc-version-cmd.md"
+  source_version: 5
+  source_modified_date: 2026-10-07
 ---
 
 # Inc Version

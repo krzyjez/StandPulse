@@ -1,4 +1,4 @@
-# agent-behavior v.8
+# agent-behavior v.10
 
 ## Zmiany w plikach
 
@@ -20,11 +20,13 @@
 
 ## Struktura odpowiedzi
 
-1. Jeśli wypunktowujesz elementy odpowiedzi, preferuj listy numerowane zamiast nienumerycznych, tak aby użytkownik mógł łatwo wskazać, do którego punktu się odnosi.
+1. Rozdział to ponumerowany nagłówek, a akapit wewnątrz rozdziału dostaje pojedynczą liczbę liczoną od 1 w tym rozdziale.
+
+2. Odniesienie `3.2` znaczy „rozdział 3, akapit 2"; przy samym akapicie piszesz `2.`, nie `3.2`.
 
 ## Pliki .md
 
-Jeśli tworzysz plik `.md`, pamiętaj, że nie powinien on być w formacie utf8 i nie zawierać BOM.
+Plik `.md` zapisuj w UTF-8 bez BOM. Nie łam linii ręcznie na stałej szerokości.
 
 # karpaty v.1
 
@@ -92,19 +94,27 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
-# branch-multisession v.6
+# branch-multisession v.11
 
-1. Zanim zmienisz jakikolwiek plik, zawsze wykonaj  `branch step-begin "<name>"`.  Jeśli nie znasz `name`  wywołaj `branch get-name` - otrzymasz wtedy imie agenta (identyfikator sesji), zapamiętaj go.
+1. Zanim zmienisz jakikolwiek plik, zawsze wykonaj `branch step-begin "<name>"`. Imię `name` pobieraj przed każdym `step-begin` przez `agent-signal get-name <sessionId>`, a nie z pamięci - użytkownik może zmienić imię agenta w trakcie sesji (w Claude wbudowanym `/rename`). W Codexie można pominąć argument tylko przy dostępnej zmiennej CODEX_THREAD_ID. W Claude podaj identyfikator własnej sesji, ustalony z kontekstu sesji lub ścieżki jej transkryptu. Nie wybieraj ID na podstawie ostatniej aktywności w repo; jeśli nie znasz własnego ID, zgłoś brak tej informacji zamiast zgadywać.
 
-2. Po zakończeniu zmian w repo zawsze wykonaj `branch step-end "<name>" "<desc>"`, używając tego samego imienia <name>.
+2. Po zakończeniu zmian w repo zawsze wykonaj `branch step-end "<name>" "<desc>"`, używając tego samego imienia <name> - także wtedy, gdy imię zmieniło się w trakcie kroku.
 
 3. Opis przekazywany do `step-end` jest po polsku opisuje dokonane zmiany.
 
 4. Po udanym `step-begin` wypisz `STEP-BEGIN <name>`. Po udanym `step-end` wypisz `STEP-END: <opis>`.
 
-5. Jeśli `branch` zwróci błąd albo instrukcję dalszego działania, przekaż ją użytkownikowi i postępuj zgodnie z nią.
+5. **`step-end` nie tworzy commita i po nim worktree zostaje brudny - tak ma być.** Commit kroku powstaje dopiero przy następnym `step-begin`, przy `branch flush` albo przy `branch finish`. Przerwa między `step-end` a commitem jest celowa: pozwala użytkownikowi obejrzeć `git diff`, zanim krok zostanie spłaszczony w historii. Nie zgłaszaj więc niezacommitowanych zmian jako problemu i nie sprawdzaj `git log`, żeby potwierdzić, że `step-end` się udał. Gdy commit ma powstać natychmiast, użyj `branch flush`.
 
-# coding v.2
+6. Jeśli `branch` zwróci błąd albo instrukcję dalszego działania, przekaż ją użytkownikowi i postępuj zgodnie z nią.
+
+7. Nie otwieraj kroku agenta wokół wywołań samego programu `branch` ani review wykonywanego wyłącznie przez odczyt kodu. `branch review` i `branch finish` wymagają zamkniętych kroków; same zapisują swoje raporty i metadane. Zwykłe poprawki kodu nadal wymagają `step-begin` oraz `step-end`.
+
+# coding v.3
+
+## Normy projektu
+
+Normy konkretnego projektu - architektura, zasady kodowania, testy, specyfika jego technologii i platform - leżą w `docs/rules/` repozytorium, po jednym pliku na obszar. Czytaj je przed pisaniem i przy ocenie kodu z danego obszaru. Przy sprzeczności mają pierwszeństwo przed regułami ogólnymi i skillami technologicznymi.
 
 ## Język kodowania
 

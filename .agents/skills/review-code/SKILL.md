@@ -1,10 +1,12 @@
 ---
 name: review-code
 description: Użyj, gdy chcesz wykonać krytyczny przegląd zmian w kodzie, całego repozytorium albo wybranego fragmentu projektu. Jeśli zakres nie jest jednoznaczny, agent ma go potwierdzić.
-info: Komenda wspólna do rygorystycznego code review z naciskiem na poprawność, architekturę, testy i ryzyka typowe dla kodu generowanego przez AI.
-implicit-invocation: false
-version: 5
-modified-date: 2026-04-29
+version: 9
+modified-date: 2026-10-12
+metadata:
+  source_component: "components/code/review-code-cmd.md"
+  source_version: 9
+  source_modified_date: 2026-10-12
 ---
 
 
@@ -12,8 +14,7 @@ modified-date: 2026-04-29
 
 Wykonaj rygorystyczny code review skoncentrowany na poprawności, architekturze, utrzymywalności, jakości testów oraz skrótach charakterystycznych dla kodu generowanego przez AI.
 
-Ten skill jest przeznaczony do ręcznego użycia.
-Nie uruchamiaj go automatycznie.
+Ten skill jest przeznaczony do jawnie zleconego review, także jako ocena subagenta w ramach polecenia użytkownika `branch review`. Nie uruchamiaj go przy zwykłej pracy bez zlecenia oceny.
 Nie zgaduj zakresu, jeśli użytkownik nie podał go jednoznacznie.
 Nie wprowadzaj zmian w plikach podczas review poza zapisaniem pliku wynikowego `Review-*.md`, chyba że użytkownik wyraźnie poprosi o osobny etap napraw.
 
@@ -53,6 +54,12 @@ Celem jest wyłapywanie:
 * kodu, który działa dziś, ale źle się zestarzeje
 
 
+
+## Zakres commitów dla branch review
+
+Jeśli zadanie podaje `MergeBaseCommit`, `HeadCommit` i `BaseCommit`, przejrzyj pełny diff `MergeBaseCommit..HeadCommit` oraz wpływ zmian na integrację z `BaseCommit`. Nie zastępuj tego zakresem `git`, który oznacza niezacommitowane zmiany. Uwzględnij potrzebny kod otaczający diff i reguły projektu.
+
+Przy delegowaniu przez `branch review` zwróć raport tekstowo do agenta prowadzącego. Nie zapisuj plików ani nie uruchamiaj operacji zmieniających Git. Agent prowadzący przekazuje tekst do CLI, które dopisuje metadane i zapisuje wersjonowany raport w `.workai/reviews/`. Ten wariant zastępuje domyślny zapis `Review-*.md` z kroku 8.
 
 ## Krok 1: Ustal zakres
 
@@ -245,6 +252,10 @@ Jeśli takie pliki istnieją, dopasuj je do wykrytego stacku, na przykład:
 - dla Fluttera użyj `review-code-flutter.md`
 
 Jeśli nie istnieją, wykonaj review bez nich i nie zgaduj brakujących kryteriów specyficznych dla technologii.
+
+Niektóre technologie mają własny lokalny skill z zasadami zamiast pliku pomocniczego. Dla kodu React użyj skilla `react-rules` wraz z jego plikami towarzyszącymi, jeśli jest zainstalowany w projekcie.
+
+Normy projektu z `docs/rules/` mają pierwszeństwo przed tymi perspektywami ogólnymi.
 
 ## Krok 7: Skalibruj wagę problemów
 

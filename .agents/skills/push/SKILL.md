@@ -1,12 +1,12 @@
 ---
 name: push
 description: Zapisuj i wypychaj na GitHuba cały bieżący stan repozytorium, gdy użytkownik mówi „push”, „wypchnij wszystko na GitHuba” albo chce czysty worktree. Uwzględniaj wszystkie nieignorowane zmiany, także wykonane przez użytkownika i inne agenty, korzystaj z workflow branch, gdy jest aktywny, oraz weryfikuj synchronizację po pushu.
-version: 2
-modified-date: 2026-08-07
+version: 3
+modified-date: 2026-09-24
 metadata:
   source_component: "components/common/push-cmd.md"
-  source_version: 2
-  source_modified_date: 2026-08-07
+  source_version: 3
+  source_modified_date: 2026-09-24
 ---
 
 # Push
@@ -19,6 +19,7 @@ Wykonaj ten workflow w bieżącym repozytorium Git.
    - Jeśli otwarte kroki agentów blokują zwykły flush, pokaż krótkie ostrzeżenie z ich nazwami i wykonaj `branch flush --force`. Jawne polecenie użytkownika „push” oznacza zgodę na zapis wszystkich zmian bieżącego brancha.
    - Po udanym flush uruchom ponownie `branch reconcile`. Dzięki temu starszy lokalny workflow bez markera zostanie zmigrowany do przenośnego formatu, gdy worktree jest już czysty.
    - Nie edytuj ręcznie pliku `.workai\branch-state.json`.
+   - Jeśli gałąź ma otwarte forki (plik `.workai\forks.json`), ostrzeż użytkownika, wymieniając ich nazwy, ale nie blokuj pushu. Gałąź forka nie jest wypychana, a jego worktree zostaje na tym komputerze: na innej maszynie `branch finish` rodzica będzie zablokowany do czasu `branch merge` albo `branch remove`. Nie uruchamiaj żadnej z tych komend z własnej inicjatywy.
 3. Jeśli workflow branch nie jest aktywny, dodaj wszystkie nieignorowane zmiany przez `git add -A` i utwórz jeden commit. Użyj krótkiego opisu rzeczywistych zmian; nie pomijaj zmian wykonanych przez użytkownika ani inne agenty.
 4. Wykonaj `git fetch origin` i sprawdź, czy zdalny odpowiednik bieżącego brancha ma commity, których nie ma lokalnie.
    - Jeśli tak, ostrzeż użytkownika, że na GitHubie są nowsze commity na tym samym branchu.

@@ -1,12 +1,12 @@
 ---
 name: branch
-description: Pomagaj użytkownikowi rozpoczynać albo zakończyć pracę z programem `branch` w bieżącym repozytorium. Używaj także wtedy, gdy użytkownik chce utworzyć nową gałąź git, rozpocząć nową gałąź, założyć branch do zadania, zamknąć gałąź, zakończyć branch albo domknąć workflow brancha.
-version: 14
-modified-date: 2026-08-07
+description: Obsługuj branch start, review z subagentem, finish, forki w osobnym worktree (fork, merge, remove) oraz kroki step-begin/step-end. Używaj przy tworzeniu i zamykaniu gałęzi oraz przed rozpoczęciem zadania w aktywnym workflow branch, aby ocenić zgodność zadania z celem gałęzi.
+version: 32
+modified-date: 2026-10-12
 metadata:
   source_component: "components/common/branch-cmd.md"
-  source_version: 14
-  source_modified_date: 2026-08-07
+  source_version: 32
+  source_modified_date: 2026-10-12
 ---
 
 # Branch
@@ -24,7 +24,7 @@ Trzymaj się poniższego słownika operacyjnego:
 1. `workflow brancha` - cała praca nad jednym zadaniem od `branch start` do `branch finish`.
 2. `krok [agenta]` - pojedynczy okres pracy jednego agenta od `branch step-begin` do `branch step-end`.
 3. `agent` - uczestnik workflow identyfikowany imieniem, np. `Mila`.
-4. `sesja agenta` - całe okno kontekstowe pracy z agentem identyfikowane imieniem agenta pobieranym przez `agent-signal get-name`.
+4. `sesja agenta` - całe okno kontekstowe pracy z agentem identyfikowane imieniem agenta pobieranym przez `agent-signal get-name <sessionId>` (szczegóły identyfikacji sesji: `branch-techdocs.md`).
 
 ## Idea programu branch
 
@@ -37,7 +37,7 @@ Model pracy zakłada, że:
 3. commit wykonuje się tylko wtedy gdy wszyscy agenci zakończyli swoje kroki
 4. jeden commit może agregować kilka kroków różnych agentów gdyż kroki mogły się wcześniej nakładać (overlapped) przez co nie można było zrobić commitu
 
-To jest krótki workflow operacyjny prowadzony razem z użytkownikiem. Skutkiem tego skilla jest wykonanie jednej z komend programu `branch`, z których dwie są najważniejsze w rozmowie z użytkownikiem: `branch start` oraz `branch finish`.
+To jest krótki workflow operacyjny prowadzony razem z użytkownikiem. Skutkiem tego skilla jest wykonanie jednej z komend programu `branch`, z których najważniejsze w rozmowie z użytkownikiem są: `branch start`, `branch review` oraz `branch finish`.
 
 ## Stan roboczy
 
@@ -48,7 +48,9 @@ Program zapisuje własny stan w katalogu `.workai` bieżącego repozytorium:
 
 Nie edytuj tych plików ręcznie podczas zwykłej obsługi workflow. Traktuj je jako stan programu `branch`.
 
-Trwała tożsamość workflow jest dodatkowo zapisana w pustym commicie markera na branchu roboczym. Marker przechodzi przez push i pull, natomiast `.workai` pozostaje lokalnym cache sesji agentów i bieżącego kroku.
+Trwała tożsamość workflow jest dodatkowo zapisana w pustym commicie markera na branchu roboczym. Marker przechodzi przez push i pull, natomiast te pliki `.workai` pozostają lokalnym cache sesji agentów i bieżącego kroku.
+
+`.workai` jest katalogiem narzędzia `branch`. Poza lokalnym stanem trzyma dwie rzeczy wersjonowane w Git: rejestr forków `.workai\forks.json` i raporty review `.workai\reviews\`. Program sam je commituje; nie edytuj ich ręcznie.
 
 ## Zasady rozmowy z użytkownikiem
 
@@ -68,9 +70,12 @@ W pierwszej kolejności rozpoznaj, czego użytkownik chce od programu:
 - Czy chce uzgodnić lokalny stan po checkout albo pull? Wtedy wykonaj `branch reconcile`.
 - Czy chce zsynchronizować starszy workflow bez markera? Wtedy przejdź do **Branch sync**.
 - Czy chce rozpocząć workflow? Wtedy przejdź do **Branch start**.
+- Czy zaczynamy nowe zadanie lub krok w aktywnym workflow? Najpierw przejdź do **Relacja z krokami agentów**.
+- Czy chce wykonać review brancha? Wtedy przejdź do **Branch review**.
 - Czy chce domknąć workflow? Wtedy przejdź do **Branch finish**.
+- Czy w trakcie pracy wyszedł drugi, niezależny problem? Wtedy przejdź do **Branch fork**.
 
-Dla `reconcile`, `sync`, `start` i `finish` użyj szczegółowych procedur poniżej. Dla pozostałych komend oprzyj się na `branch help <command>` i wyniku programu.
+Dla `reconcile`, `sync`, `start`, `review`, `finish` oraz `fork`, `merge` i `remove` użyj szczegółowych procedur poniżej. Dla pozostałych komend oprzyj się na `branch help <command>` i wyniku programu.
 
 ## Branch reconcile
 
@@ -107,7 +112,9 @@ Wywołanie komendy tworzenia gałęzi ma postać:
 
 `branch start "<nazwa>" "<opis>"`
 
-Oznacza to, że w pierwszej kolejności musisz ustalić nazwę i opis gałęzi. Jeśli użytkownik nie poda nazwy gałęzi, pomóż mu ją wymyślić. Nie zgaduj opisu gałęzi na podstawie nazwy, ani odwrotnie. Gdy już ustalicie z użytkownikiem nazwę i opis gałęzi wykonaj `branch start <nazwa> "<opis>"`.
+Oznacza to, że w pierwszej kolejności musisz ustalić nazwę i opis gałęzi. Jeśli użytkownik nie poda nazwy gałęzi, pomóż mu ją wymyślić.
+
+Nazwa gałęzi jest zawsze po angielsku, w `kebab-case`: tylko litery ASCII, cyfry i myślniki, bez polskich liter i spacji, np. `fix-login-error`. Pilnuj tego, zanim wywołasz program: jeśli użytkownik poda nazwę po polsku albo z polskimi znakami, zaproponuj angielski odpowiednik i poczekaj na akceptację. Program i tak odrzuci nazwę ze znakami spoza ASCII, ale rozmowa o nazwie należy do Ciebie, nie do komunikatu błędu. Opis gałęzi pozostaje po polsku. Nie zgaduj opisu gałęzi na podstawie nazwy, ani odwrotnie. Gdy już ustalicie z użytkownikiem nazwę i opis gałęzi wykonaj `branch start <nazwa> "<opis>"`.
 
 Jeśli program zwróci błąd, nie zgaduj i nie wykonuj dodatkowych operacji Git na własną rękę. Przekaż użytkownikowi problem krótko, a rozwiązanie proponuj tylko wtedy, gdy wynika z komunikatu programu.
 
@@ -116,7 +123,7 @@ Typowe sytuacje problemowe przy `branch start`:
 1. Bieżący katalog nie jest repozytorium Git - powiedz, że `branch start` działa tylko w istniejącym repo.
 2. W repo istnieje już aktywny workflow - zaproponuj `branch status`, żeby zobaczyć, co jest aktywne.
 3. Worktree nie jest czysty - powiedz, że start nowego workflow wymaga czystego stanu repo.
-4. Nazwa brancha jest niepoprawna dla Gita - poproś użytkownika o inną nazwę albo zaproponuj prostszą.
+4. Nazwa brancha jest niepoprawna dla Gita albo nie jest angielska (znaki spoza ASCII, spacje) - zaproponuj poprawną angielską nazwę w `kebab-case`.
 5. Branch o tej nazwie już istnieje - poproś użytkownika o inną nazwę albo decyzję, co zrobić z istniejącym branchem.
 6. Repo jest w stanie detached HEAD albo Git zwróci inny błąd - przekaż komunikat i zatrzymaj się przed dalszymi działaniami.
 
@@ -152,41 +159,72 @@ A: Gotowe.
 
 Jak widać dialog z użytkownikiem jest bardzo prosty i nie zawiera żadnych szczegółów technicznych. To przykładowy dialog, nie musi on wyglądać identycznie (np. użytkownik może mieć gotową nazwę gałęzi) - chodzi o pokazanie poziomu szczegółowości.
 
+## Branch review
+
+Polecenie użytkownika „branch review” uruchamia cały proces z poziomu aplikacji agenta. Obejmuje przygotowanie zakresu, ocenę subagenta, zapis raportu oraz push i publikację w PR-ze, jeśli repozytorium jest powiązane z GitHubem. Nie oznacza zgody na scalenie ani automatyczne poprawianie znalezionych problemów.
+
+1. Wywołaj `branch review`. CLI zapisuje zamknięte kroki i zwraca metadane zakresu: `HeadCommit`, `BaseCommit`, `MergeBaseCommit`, `ReportPath` oraz ewentualny PR. Jeśli istnieje kilka celów GitHub, ustal z użytkownikiem remote i ponów z `--remote <nazwa>`. Błąd dostępu do GitHuba nie upoważnia do lokalnego merge.
+2. W Codexie przeczytaj `branch-review-codex.md`, a w Claude Code `branch-review-claude.md`. Zastosuj właściwą ścieżkę bez wymagania od użytkownika wyboru recenzenta. Przed delegowaniem potwierdź istnienie trzech commitów (`git cat-file -e <SHA>^{commit}` z argumentem cytowanym w PowerShell) oraz zgodność HEAD z `HeadCommit`; przy rozbieżności pozostaw review nieukończone i odśwież zakres przez CLI. Uruchom osobnego subagenta ze świeżym kontekstem. Przekaż mu ścieżkę repozytorium, cel workflow, trzy identyfikatory commitów i instrukcję oceny pełnego zakresu `MergeBaseCommit..HeadCommit`, z uwzględnieniem integracji z `BaseCommit`. Przekaż także wymagania użytkownika i kryteria akceptacji. Subagent czyta reguły projektu, lokalny `init-session` (tylko zbieranie kontekstu, bez zapisów), odpowiednią dokumentację oraz potrzebny kod i testy. Bez `init-session` zbiera kontekst bezpośrednio z dokumentacji. Nie zmienia plików ani stanu Git; zwraca tekst raportu. Jeśli środowisko nie umożliwia delegowania, poinformuj o tym i pozostaw review nieukończone.
+3. W Claude Code stosuj kryteria oficjalnego recenzenta zgodnie z jego instrukcją, z listami kontrolnymi technologii i `docs/rules` projektu; wąskich recenzentów dobierz według zakresu, a na polecenie „pełne review” uruchom wszystkich (szczegóły w `branch-review-claude.md`). W Codexie zastosuj kryteria skilla `review-code`, jeśli jest dostępny; w przeciwnym razie przekaż reviewerowi kryteria: poprawność, regresje, bezpieczeństwo, integracja z bazą i adekwatność testów. Każda uwaga wskazuje miejsce, konsekwencję i sugerowaną naprawę. Przekaż recenzentowi kontrakt „Zwięzły raport review” z `branch-techdocs.md`: wynik, opisowy cel, problemy oraz krótkie sprawdzenia i ograniczenia; bez powtarzania metadanych i list przeczytanych plików. Nie oznaczaj nieprzejrzanego zakresu jako gotowego. Recenzent nie deleguje dalej; brak wymaganego dostępu zgłasza jako ograniczenie, bez prób obejścia. Główny agent sprawdza kompletność odpowiedzi i brak nieoczekiwanych zmian HEAD oraz stanu roboczego. Przy zmianach zatrzymaj rejestrację bez automatycznego cofania plików.
+4. Brak odpowiedzi, błąd lub werdykt `incomplete` oznacza nieukończone review: nie wywołuj `--complete`. Nie jest to trzeci wynik CLI. Dla ukończonej oceny zapisz zwróconą treść do pliku tymczasowego poza repozytorium. Nie zapisuj ręcznie metadanych ani docelowego raportu. Zarejestruj wynik: `branch review --complete --body-file <plik> --result passed|issues --reviewer <identyfikator-subagenta>`. `passed` oznacza ukończoną ocenę bez żadnych uwag, `issues` oznacza raport z uwagami - niezależnie od ich wagi i rodzaju - wymagającymi poprawki lub świadomej akceptacji użytkownika.
+5. CLI zapisuje i commituje raport w `.workai/reviews/YYYY-MM-DD-nazwa-galezi-NNN.md`, z metadanymi YAML frontmatter między liniami `---`. W trybie GitHub publikuje ten commit i ocenę w tym samym PR-ze. Usuń własny plik tymczasowy po skutecznym zapisie. Po błędzie publikacji ponów rejestrację tego samego wyniku; nie twórz drugiego PR-a ręcznie.
+6. Jeśli CLI utworzyło nowy PR, uzupełnij jego opis: cel zadania, wynikające z niego zmiany i faktycznie przeprowadzona weryfikacja. Użyj `gh pr edit --repo <repo> <numer> --body-file <plik-tymczasowy>`; przy istniejącym PR-ze zachowaj treści użytkownika. Podaj krótki wynik, link do raportu i PR-a.
+7. Zatrzymaj się. Review kończy turę agenta: przedstaw użytkownikowi streszczenie raportu i czekaj na jego decyzję. Nie zaczynaj poprawek ani kolejnego review z własnej inicjatywy.
+
+Streszczenie ma oszczędzić użytkownikowi czytania całego raportu i pozwolić mu skupić się na tym, co wymaga jego decyzji. Podaj werdykt, a potem uwagi w dwóch grupach zgodnych z ich rodzajem (definicje w `branch-techdocs.md`):
+
+1. `strategiczne` — najpierw, każda osobno, z konsekwencją i pytaniem albo wariantami do rozstrzygnięcia;
+2. `techniczne` — jedną krótką listą; użytkownik może je zlecić hurtem.
+
+Po decyzji użytkownika poprawki są zwykłymi krokami pracy, po których wykonuje się review ponownie. Nie uruchamiaj `finish` bez polecenia użytkownika.
+
+CLI nie uruchamia modelu AI. Samo `branch review` wykonane w terminalu przygotowuje zakres, ale nie oznacza zakończenia oceny. `--complete` jest technicznym krokiem wykonywanym przez agenta w aplikacji.
+
+Nie otwieraj kroku `step-begin` wokół operacji samego programu `branch` ani pracy subagenta, który tylko czyta kod. Review wymaga zamkniętych kroków. Zwykłe poprawki kodu nadal podlegają `step-begin` / `step-end`.
+
 ## Branch finish
 
-Branch finish to komenda zamykająca gałąź. Jej wywołanie to: `branch finish`.
-Jak widać nie trzeba żadnych parametrów, więc możesz od razu ją wywołać. To co ona zwróci pokieruje twoją konwersacją z użytkownikiem. Jeśli program zakończy się powodzeniem, poinformuj użytkownika krótko, że branch został domknięty. Jeśli był jakiś problem, przekaż użytkownikowi komunikat programu i zatrzymaj się przed dalszymi działaniami, chyba że program sam podpowiada następny krok.
+Na polecenie użytkownika przygotuj podsumowanie końcowego rezultatu na podstawie celu workflow, faktycznego diffu względem bazy i aktualnego review. Historia kroków jest materiałem pomocniczym: nie sklejaj jej opisów ani nie zastępuj podsumowania listą skróconych commitów. Opisz finalne zachowanie, istotne zmiany i rzeczywistą weryfikację; pomiń porzucone podejścia i kronikę pracy. Zwykle wystarczy krótki tytuł i jeden lub dwa akapity albo kilka punktów. Numer wersji dodaj tylko wtedy, gdy pomaga opisać wynik.
 
-Wyjątek techniczny na Windows: jeżeli bieżący workflow aktualizuje dokładnie ten plik `.exe`, który zwraca `(Get-Command branch).Source`, nie uruchamiaj `finish` z tej ścieżki. Windows może zablokować podmianę działającego pliku podczas checkoutu. Skopiuj plik do `$env:TEMP`, uruchom `finish` z kopii, a po zakończeniu usuń kopię. Wykonaj to automatycznie, bez angażowania użytkownika; helper nie może trafić do commita.
+Zapisz podsumowanie jako UTF-8 bez BOM do pliku tymczasowego poza repo: pierwsza linia to tytuł, potem pusta linia i opis. Uruchom `branch finish --message-file <plik>`. CLI wymaga aktualnego review, dodaje odwołanie do niego i używa tego samego podsumowania w lokalnym commicie scalającym oraz przez GitHub PR. Scalenie zachowuje kroki gałęzi w historii bazy. Pusty workflow i sprzątanie po już wykonanym scaleniu nie wymagają podsumowania. Usuń własny plik po sukcesie; po błędzie zachowaj go do ponowienia i odśwież opis, jeśli zmienił się zakres. Gdy wynik `finish` zawiera linię `UWAGA`, przekaż ją użytkownikowi dosłownie.
 
-`branch finish` nie zwalnia imienia agenta. Globalna sesja agenta jest obsługiwana poza programem `branch`, na przykład przez `agent-signal`.
+Jeśli review zawiera uwagi, przedstaw je użytkownikowi. Po jego jawnej decyzji o zaakceptowaniu problemów uruchom `branch finish --message-file <plik> --accept-issues "<uzasadnienie użytkownika>"`. Nie wymyślaj akceptacji w imieniu użytkownika. Opcja zapisuje decyzję w raporcie; nie omija braku review, zmiany kodu lub bazy ani wymagań ustawionych na GitHubie.
 
-Typowe sytuacje problemowe przy `branch finish`:
+Po błędzie zachowaj workflow. Przy braku albo nieaktualnym review wróć do `branch review`. Nie zastępuj błędu GitHuba lokalnym merge. Nie używaj administracyjnego obejścia ochrony brancha. Ponowne `finish` potrafi dokończyć synchronizację i sprzątanie po scaleniu PR-a w przeglądarce lub przerwaniu programu; komunikaty o konflikcie wymagają rozwiązania wskazanego problemu.
 
-1. Program `branch` albo `git` nie znajduje się w `PATH` - poinformuj użytkownika i zakończ obsługę skilla.
-2. Bieżący katalog nie jest repozytorium Git - powiedz, że `branch finish` działa tylko w repo z aktywnym workflow brancha.
-3. Brak aktywnego workflow - powiedz, że nie ma czego domykać; jeśli użytkownik chce zacząć nową pracę, może użyć `branch start`.
-4. Aktywny branch nie zgadza się ze stanem workflow - przekaż komunikat programu i nie przełączaj brancha samodzielnie.
-5. Istnieje niedomknięty krok agenta - powiedz, że workflow trzeba najpierw domknąć zgodnie z komunikatem programu.
-6. Git zwróci błąd przy checkout, squash merge albo commicie zamykającym - przekaż komunikat i zatrzymaj się przed dalszymi działaniami.
+Wyjątek Windows: jeśli workflow zmienia uruchamiany `branch.exe`, skopiuj go do katalogu tymczasowego i wykonaj `finish` z kopii, aby checkout mógł podmienić binarkę. Po zakończeniu usuń własną kopię.
 
-### Przebieg rozmowy z użytkownikiem
+Raporty pozostają w `.workai/reviews/` i w historii Git. `branch finish` nie zwalnia imienia agenta. Po sukcesie krótko poinformuj o domknięciu workflow.
 
-Tak jak przy `branch start`, rozmowa ma być krótka i operacyjna. Nie opisuj z własnej inicjatywy technicznych szczegółów typu `squash merge`, zapisów stanu workflow albo plików w `.workai`, chyba że użytkownik o to zapyta albo program zwróci błąd i trzeba wyjaśnić problem.
+## Branch fork
 
-Przykładowy dialog Agenta (A) z użytkownikiem (U):
+Fork służy jednej sytuacji: podczas pracy nad zadaniem wychodzi drugi, niezależny problem, którym trzeba zająć się od razu, a którego nie chcesz mieszać z bieżącą gałęzią. Gdy ją rozpoznasz, zaproponuj fork zamiast rozszerzać zakres gałęzi (patrz **Relacja z krokami agentów**, punkt 2). Zadanie całkowicie niezależne od bieżącej pracy nie jest forkiem — zaczyna się zwykłym `branch start` z gałęzi bazowej.
 
-U: Zakończ branch.
+Decyzja należy do użytkownika; `fork`, `merge` i `remove` uruchamiaj tylko na jego wyraźne polecenie. Wszystkie trzy działają w katalogu głównym repozytorium.
 
-A: Aktywny branch to 'log-fix' - domykam aktywny branch workflow.
+1. Ustal z użytkownikiem nazwę i opis forka tak samo jak przy **Branch start** — nazwa po angielsku, w `kebab-case`, bez ukośnika. Wykonaj `branch fork <nazwa> "<opis>"`. Program utworzy gałąź i osobny katalog roboczy oraz otworzy dla niego nowe okno.
+2. Powiedz użytkownikowi, że w nowym oknie tworzy agenta przyciskiem `new-session`, tak samo jak w oknie głównym. Ty zostajesz przy swoim zadaniu i nie zajmujesz się pracą forka.
+3. Gdy fork jest gotowy i oceniony, użytkownik scala go poleceniem `branch merge <nazwa>`. Przygotuj podsumowanie dokładnie tak jak dla **Branch finish** i przekaż je przez `--message-file`; uwagi review obsłuż przez `--accept-issues` na tych samych zasadach.
+4. Fork porzucony bez scalania znika razem z pracą: `branch remove <nazwa>` kasuje katalog roboczy, gałąź i commity. Uruchamiaj tę komendę wyłącznie na jednoznaczne polecenie użytkownika i upewnij się, że rozumie, iż zmian nie da się odzyskać.
+5. Gdy program zgłosi, że nie może usunąć katalogu forka, powiedz użytkownikowi wprost: okno VS Code z forkiem jest najpewniej otwarte, trzeba je zamknąć. Nic nie zostało scalone ani usunięte; po zamknięciu okna powtórz tę samą komendę. Otwarte okno bywa niedopatrzeniem, więc przy `remove` najpierw daj użytkownikowi szansę je zamknąć. Gdy odpowie, że nie może tego zrobić (np. pracuje zdalnie), sam uruchom `branch remove <nazwa> --force` - nie pytaj ponownie o zgodę, bo polecenie porzucenia już padło, a `--force` niczego więcej nie kasuje. Fork zostaje wtedy porzucony od razu, a jego katalog program skasuje przy pierwszym poleceniu `branch` (status, fork, remove) po zamknięciu okna; przekaż to użytkownikowi. `merge` nie ma trybu wymuszonego - tam trzeba zamknąć okno.
+6. Gdy `merge` odmówi z powodu niezapisanej pracy forka, powiedz użytkownikowi, że w oknie forka trzeba dokończyć krok i ponownie wykonać `branch review`. Nie próbuj tego obchodzić.
+7. Gdy `merge` zgłosi nieudany commit scalenia, przekaż przyczynę z komunikatu i zaproponuj jej usunięcie; potem powtórz `branch merge`. Program sam odtworzy katalog forka, gałąź i wpis w rejestrze nie giną.
 
-A: Gotowe.
+Gdy pracujesz w oknie forka, rozpoznasz to po tym, że `branch status` pokazuje gałąź forka, a katalog roboczy leży w przestrzeni `.worktrees`. Obowiązuje wtedy zwykły rytm pracy — `step-begin`, `step-end`, `flush`, `review` — z dwiema różnicami:
+
+1. Review forka jest lokalne: nie ma pusha ani PR-a, nawet jeśli repozytorium jest powiązane z GitHubem. Zmiany forka trafiają na GitHub razem z gałęzią rodzica.
+2. `start`, `fork`, `finish`, `merge` i `remove` nie działają w oknie forka. Jeśli użytkownik o nie poprosi, powiedz, że wykonuje się je w oknie głównym repozytorium.
+
+Gałąź rodzica nie domknie się, dopóki ma otwarty fork — `branch finish` wypisze wtedy jego nazwę i dwie możliwe komendy. Przekaż to użytkownikowi i poczekaj na decyzję, czy fork scalić, czy porzucić.
 
 ## Relacja z krokami agentów
 
-Ten skill służy przede wszystkim do rozmowy z użytkownikiem o `branch start` i `branch finish`.
+Przed `branch step-begin`, gdy rozpoczynasz nowe zadanie, porównaj jego cel z celem aktywnego workflow. Przy pierwszej ocenie albo po zmianie gałęzi odczytaj `branch status`: kieruj się `Start description` i ustaleniami rozmowy, nie samą nazwą brancha. Jeśli nie ma workflow, nie twórz go w ramach tej kontroli; jeśli cel jest niejasny, doprecyzuj go zamiast zgadywać.
 
-Obsługa `branch step-begin` i `branch step-end` jest zwykle pilnowana przez reguły pracy agenta, a nie przez ten skill. Agent powinien wiedzieć tylko tyle, że są to komendy rozpoczynania i kończenia kroku agenta, wykonywane przed i po zmianach w plikach.
+1. Poprawki, testy i dokumentacja potrzebne do wykonania pierwotnego zadania mieszczą się w jego zakresie. Kontynuuj bez dodatkowego pytania; nie oceniaj każdego drobnego kroku od nowa.
+2. Przy wyraźnie odrębnym zadaniu, przed otwarciem kroku i zmianami, krótko wskaż rozbieżność: „Ten branch dotyczy logowania, a teraz zaczynamy eksport raportów. Może warto domknąć go przez review i finish, a eksport zacząć na nowym?”. Zapytaj, czy rozdzielamy pracę, czy świadomie rozszerzamy zakres, i poczekaj na decyzję. Jeśli nowy temat trzeba załatwić od razu, a bieżącej gałęzi nie da się jeszcze domknąć, zaproponuj jako trzecią możliwość fork (patrz **Branch fork**).
+3. Uwzględniaj już udzieloną zgodę na rozszerzenie zakresu. Zapamiętaj ją w kontekście tej sesji i nie ponawiaj ostrzeżenia dla zaakceptowanego zadania. Wróć do oceny przy kolejnym odrębnym zadaniu; nie zmieniaj ręcznie stanu workflow.
+4. Samo wykrycie rozbieżności nie upoważnia do review, finish, przełączenia ani utworzenia gałęzi. Po decyzji wykonaj właściwy workflow; gdy użytkownik pozwoli kontynuować, użyj zwykłego `step-begin` / `step-end`.
 
 Jeśli użytkownik wyraźnie pyta o kroki agentów, `flush`, `reconcile`, `sync`, aktywne okno albo powiadomienia, nie zgaduj z pamięci. Użyj `branch help <command>` albo zajrzyj do:
 
