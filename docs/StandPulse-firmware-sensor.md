@@ -18,8 +18,10 @@ Katalog `firmware` powinien zawierać źródła firmware'u, który faktycznie je
 
 | Plik | Rola |
 |---|---|
-| `firmware/standpulse_sensor/standpulse_sensor.ino` | Aktualny firmware wgrany na XIAO ESP32-C3. |
+| `firmware/standpulse_sensor/standpulse_sensor.ino` | Aktualny firmware dla XIAO ESP32-C3. |
 | `scripts/read-standpulse-com.ps1` | Pomocniczy skrypt PowerShell do czytania danych z `COM4`. |
+| `src/StandPulse.ScannerViewer` | Małe okienko C# / WinForms do obserwacji stanu i odległości z czujnika. |
+| `src/StandPulse.ScannerViewer/sensor-settings.json` | Konfiguracja interpretacji sensora: port, baud rate, próg odległości i czas stabilizacji. |
 
 ## Dwa różne łącza szeregowe
 
@@ -38,7 +40,7 @@ Ważne: `256000` to **prędkość transmisji UART**, a nie częstotliwość odcz
 Firmware wysyła pojedyncze linie JSON, na przykład:
 
 ```json
-{"present":true,"targetStatus":"StaticTarget","distanceMm":0,"radarMode":2}
+{"present":true,"targetStatus":"StaticTarget","distanceCm":30,"radarMode":2}
 ```
 
 Znaczenie pól:
@@ -47,12 +49,49 @@ Znaczenie pól:
 |---|---|
 | `present` | Uproszczony bool: `true` dla `MovingTarget`, `StaticTarget` albo `BothTargets`. |
 | `targetStatus` | Etykieta z radaru: `NoTarget`, `MovingTarget`, `StaticTarget`, `BothTargets` albo `ErrorFrame`. |
-| `distanceMm` | Odległość raportowana przez bibliotekę radaru w milimetrach. To pole trzeba jeszcze zweryfikować w testach fizycznych. |
-| `radarMode` | Tryb raportowania radaru. W dotychczasowym odczycie widoczny był tryb `2`. |
+| `distanceCm` | Odległość raportowana przez radar w centymetrach. Wcześniejsza robocza nazwa `distanceMm` była myląca. |
+| `radarMode` | Tryb raportowania radaru: `2` oznacza podstawowe dane celu, `1` oznacza tryb engineering z dodatkowymi energiami bramek. |
 
 ## Odczyt danych w Windows
 
 Urządzenie jest widoczne jako `COM4`.
+
+Odczyt w okienku C#:
+
+```powershell
+dotnet run --project .\src\StandPulse.ScannerViewer\StandPulse.ScannerViewer.csproj
+```
+
+Okienko pokazuje przede wszystkim dwa stany: `OBECNY` i `NIEOBECNY`, dużą odległość w centymetrach oraz historię zmian stanu. Surowe linie JSON nie są pokazywane w UI, żeby ekran nadawał się do spokojnej obserwacji na bocznym monitorze.
+
+Decyzja `OBECNY` w viewerze jest filtrowana:
+
+```text
+radar widzi cel && distanceCm < 120
+```
+
+Zmiana stanu jest akceptowana dopiero wtedy, gdy nowy kandydat utrzymuje się przez około 10 sekund. Dzięki temu pojedyncze skoki radaru nie powinny natychmiast przełączać widoku.
+
+Te wartości są konfigurowalne w pliku:
+
+```text
+sensor-settings.json
+```
+
+Domyślnie:
+
+```json
+{
+  "serial": {
+    "portName": "COM4",
+    "baudRate": 115200
+  },
+  "presence": {
+    "maxDistanceCm": 120,
+    "stateChangeDelaySeconds": 10
+  }
+}
+```
 
 Odczyt przez PowerShell:
 

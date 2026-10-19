@@ -1,0 +1,7 @@
+interface:
+  display_name: "push"
+  short_description: "Zapisuj i wypychaj cały stan repozytorium na GitHuba."
+  default_prompt: "Use $push to commit and push all unignored changes from the current repository."
+
+policy:
+  allow_implicit_invocation: true

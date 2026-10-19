@@ -1,0 +1,7 @@
+interface:
+  display_name: "pull"
+  short_description: "Pobieraj najnowszy zdalny branch bez nadpisywania zmian."
+  default_prompt: "Use $pull to fetch and update the repository from its newest remote branch safely."
+
+policy:
+  allow_implicit_invocation: true

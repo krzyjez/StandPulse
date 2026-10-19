@@ -1,0 +1,20 @@
+{
+  "name": "desk-plug",
+  "type": "shellyPlug",
+  "enabled": true,
+  "connection": {
+    "mode": "cloud",
+    "serverUri": "https://shelly-258-eu.shelly.cloud",
+    "deviceId": "d885ac1745e4",
+    "authKeyEnvironmentVariable": "STANDPULSE_SHELLY_AUTH_KEY",
+    "channel": 0,
+    "commandTimeoutSeconds": 10,
+    "retryCount": 2,
+    "stateCheckIntervalSeconds": 30
+  },
+  "turnOnWhen": {
+    "sensorStatus": "presence",
+    "sessionStatus": "active"
+  },
+  "defaultState": "off"
+}

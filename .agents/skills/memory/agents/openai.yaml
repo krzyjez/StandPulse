@@ -1,0 +1,6 @@
+interface:
+  display_name: "memory"
+  short_description: "Aktualizacja trwałej pamięci projektu."
+  default_prompt: "Use $memory to update project-memory.md with durable project decisions, sources of truth, pitfalls, and conventions."
+policy:
+  allow_implicit_invocation: true

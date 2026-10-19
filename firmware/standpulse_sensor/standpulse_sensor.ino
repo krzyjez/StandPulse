@@ -45,10 +45,15 @@ void setup() {
 void loop() {
   int retryCount = 0;
   const int maxRetries = 10;
+  const int retryDelayMs = 20;
 
   do {
     radarStatus = radar.getStatus();
     retryCount++;
+    if (radarStatus.targetStatus == Seeed_HSP24::TargetStatus::ErrorFrame &&
+        retryCount < maxRetries) {
+      delay(retryDelayMs);
+    }
   } while (radarStatus.targetStatus == Seeed_HSP24::TargetStatus::ErrorFrame &&
            retryCount < maxRetries);
 
@@ -57,7 +62,7 @@ void loop() {
     snprintf(
       line,
       sizeof(line),
-      "{\"present\":%s,\"targetStatus\":\"%s\",\"distanceMm\":%d,\"radarMode\":%d}",
+      "{\"present\":%s,\"targetStatus\":\"%s\",\"distanceCm\":%d,\"radarMode\":%d}",
       isPresent(radarStatus.targetStatus) ? "true" : "false",
       targetStatusToString(radarStatus.targetStatus),
       radarStatus.distance,
@@ -65,8 +70,15 @@ void loop() {
     );
     Serial.println(line);
   } else {
-    char line[80];
-    snprintf(line, sizeof(line), "{\"event\":\"radar_read_error\",\"millis\":%lu}", millis());
+    char line[120];
+    snprintf(
+      line,
+      sizeof(line),
+      "{\"event\":\"radar_read_error\",\"millis\":%lu,\"retries\":%d,\"retryDelayMs\":%d}",
+      millis(),
+      retryCount,
+      retryDelayMs
+    );
     Serial.println(line);
   }
 

@@ -1,0 +1,7 @@
+interface:
+  display_name: "branch"
+  short_description: "Rozpoczynaj, recenzuj, forkuj i kończ pracę na gałęzi"
+  default_prompt: "Użyj $branch do rozpoczęcia pracy, niezależnego review, forka w osobnym worktree lub zakończenia gałęzi."
+
+policy:
+  allow_implicit_invocation: true
