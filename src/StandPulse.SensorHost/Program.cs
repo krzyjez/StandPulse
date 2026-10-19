@@ -215,7 +215,10 @@ internal sealed class SensorHostService
   private readonly IReadOnlyList<EffectorDefinition> _effectors;
   private readonly SensorStateStore _store;
   private readonly SensorHostLogger _logger;
+  private static readonly TimeSpan SensorErrorLogInterval = TimeSpan.FromMinutes(1);
+
   private int _consecutiveSensorErrors;
+  private DateTimeOffset _lastSensorErrorLogAt;
   private int _startupInvalidLineCount;
   private bool _receivedValidSensorMessage;
 
@@ -355,7 +358,18 @@ internal sealed class SensorHostService
         if (firmwareEvent.Event == "radar_read_error")
         {
           _consecutiveSensorErrors++;
-          _WriteOperationalLog($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
+          var now = DateTimeOffset.Now;
+          // Po przekroczeniu progu log dostaje podsumowanie co minutę, żeby trwała awaria nie wypierała historii z rotowanego logu.
+          if (_consecutiveSensorErrors <= _settings.Presence.MaxConsecutiveSensorErrors)
+          {
+            _WriteOperationalLog($"Błąd firmware sensora: {_consecutiveSensorErrors}/{_settings.Presence.MaxConsecutiveSensorErrors}");
+            _lastSensorErrorLogAt = now;
+          }
+          else if (now - _lastSensorErrorLogAt >= SensorErrorLogInterval)
+          {
+            _WriteOperationalLog($"Trwały błąd firmware sensora: {_consecutiveSensorErrors} kolejnych zdarzeń.");
+            _lastSensorErrorLogAt = now;
+          }
 
           if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
             _store.SetTechnicalStatus(SensorStatus.Error);
@@ -379,6 +393,8 @@ internal sealed class SensorHostService
 
       _receivedValidSensorMessage = true;
       _startupInvalidLineCount = 0;
+      if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
+        _WriteOperationalLog($"Sensor wysyła poprawne próbki po {_consecutiveSensorErrors} kolejnych błędach firmware.");
       _consecutiveSensorErrors = 0;
       var presentAtDesk = sample.Present &&
                           sample.DistanceCm.HasValue &&
@@ -1581,7 +1597,8 @@ internal sealed class SensorHostLogger : IDisposable
   private const string LogFileName = "sensorhost.log";
 
   private readonly object _syncRoot = new();
-  private StreamWriter _writer;
+  // Null oznacza plik zamknięty po błędzie zapisu; następna linia próbuje otworzyć go ponownie.
+  private StreamWriter? _writer;
 
   // Zachowuje otwarty plik logu operacyjnego dla procesu hosta.
   private SensorHostLogger(string path, StreamWriter writer, bool traceEnabled)
@@ -1623,19 +1640,45 @@ internal sealed class SensorHostLogger : IDisposable
     return System.IO.Path.Combine(resolvedDirectory, LogFileName);
   }
 
-  /// <summary>Zapisuje jedną linię logu z lokalnym znacznikiem czasu.</summary>
+  /// <summary>Zapisuje jedną linię logu z lokalnym znacznikiem czasu; błąd zapisu nigdy nie wychodzi do wywołującego.</summary>
   public void WriteLine(string message)
   {
+    var line = FormatLine(message);
+
     lock (_syncRoot)
     {
-      _writer.WriteLine(FormatLine(message));
-      if (_writer.BaseStream.Length > MaxLogBytes)
+      try
       {
-        _writer.Dispose();
-        _ArchiveIfTooLarge(Path);
-        _writer = _OpenWriter(Path);
+        _writer ??= _OpenWriter(Path);
+        _writer.WriteLine(line);
+        if (_writer.BaseStream.Length > MaxLogBytes)
+        {
+          _CloseWriter();
+          _ArchiveIfTooLarge(Path);
+          _writer = _OpenWriter(Path);
+        }
+      }
+      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+      {
+        // Log nie może zatrzymać zadań hosta (np. pełny dysk); linia trafia wtedy tylko na konsolę.
+        _CloseWriter();
+        Console.Error.WriteLine(line);
       }
     }
+  }
+
+  // Zamyka plik logu, ignorując błąd opróżniania bufora po wcześniejszej awarii zapisu.
+  private void _CloseWriter()
+  {
+    try
+    {
+      _writer?.Dispose();
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+    }
+
+    _writer = null;
   }
 
   // Otwiera log w trybie dopisywania z natychmiastowym zapisem na dysk.
@@ -1672,7 +1715,7 @@ internal sealed class SensorHostLogger : IDisposable
   public void Dispose()
   {
     lock (_syncRoot)
-      _writer.Dispose();
+      _CloseWriter();
   }
 }
 

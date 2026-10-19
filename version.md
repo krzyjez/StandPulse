@@ -1,3 +1,7 @@
+# 0.1.5 2026-10-19 20:26
+- Ograniczono log trwalego `radar_read_error` do podsumowania co minute i wpisu o powrocie probek / Wielogodzinna awaria radaru nie wypiera historii z rotowanego logu
+- Zapis logu SensorHost nie rzuca juz wyjatkow do wywolujacego / Pelny dysk albo zablokowany plik przy rotacji nie zatrzymuje odczytu sensora ani procesu
+
 # 0.1.4 2026-10-19 19:52
 - Timeout SensorHost liczony od ostatniej wiadomosci firmware / Trwaly blad radaru zostaje `error` zamiast przeskakiwac co sekunde na `sensorNotAvailable`
 - Uszkodzony `sensor-settings.json` przerywa start z czytelnym bledem / Host nie pracuje po cichu na domyslnym progu, a poprawione wartosci trafiaja do logu jako ostrzezenia
