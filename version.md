@@ -1,3 +1,7 @@
+# 0.1.3 2026-06-08 14:00
+- Dodano `workPresenceSince` do snapshotu SensorHost / Klienci moga odroznic czas obecnosci roboczej od stabilizacji fizycznego sensora
+- Rozszerzono log SensorHost o pelne znaczniki czasu / Zmiany statusu sa diagnozowalne bez dopasowywania samej godziny
+
 # 0.1.2 2026-05-14 11:39
 - Rozszerzono log stabilnych zmian SensorHost o dane ostatniej probki / Konsola pokazuje przyczyne przejscia w `presence` albo `absence` bez zalewania probkami
 - Dodano odczyt wersji projektu z `version.md` podczas kompilacji / Assembly version aplikacji odpowiada najnowszemu wpisowi changeloga

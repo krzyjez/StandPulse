@@ -1,10 +1,12 @@
 ---
 name: branch
 description: Pomagaj użytkownikowi rozpoczynać albo zakończyć pracę z programem `branch` w bieżącym repozytorium. Używaj także wtedy, gdy użytkownik chce utworzyć nową gałąź git, rozpocząć nową gałąź, założyć branch do zadania, zamknąć gałąź, zakończyć branch albo domknąć workflow brancha.
-info: Komenda ułatwia korzystanie z programu `branch`
-implicit-invocation: true
-version: 12
-modified-date: 2026-04-24
+version: 14
+modified-date: 2026-08-07
+metadata:
+  source_component: "components/common/branch-cmd.md"
+  source_version: 14
+  source_modified_date: 2026-08-07
 ---
 
 # Branch
@@ -21,8 +23,8 @@ Trzymaj się poniższego słownika operacyjnego:
 
 1. `workflow brancha` - cała praca nad jednym zadaniem od `branch start` do `branch finish`.
 2. `krok [agenta]` - pojedynczy okres pracy jednego agenta od `branch step-begin` do `branch step-end`.
-4. `agent` - uczestnik workflow identyfikowany imieniem, np. `Mila`.
-5. `sesja agenta` - całe okno kontekstowe pracy z agentem identyfikowane imieniem agenta pobieranym przez `branch get-name`
+3. `agent` - uczestnik workflow identyfikowany imieniem, np. `Mila`.
+4. `sesja agenta` - całe okno kontekstowe pracy z agentem identyfikowane imieniem agenta pobieranym przez `agent-signal get-name`.
 
 ## Idea programu branch
 
@@ -46,6 +48,8 @@ Program zapisuje własny stan w katalogu `.workai` bieżącego repozytorium:
 
 Nie edytuj tych plików ręcznie podczas zwykłej obsługi workflow. Traktuj je jako stan programu `branch`.
 
+Trwała tożsamość workflow jest dodatkowo zapisana w pustym commicie markera na branchu roboczym. Marker przechodzi przez push i pull, natomiast `.workai` pozostaje lokalnym cache sesji agentów i bieżącego kroku.
+
 ## Zasady rozmowy z użytkownikiem
 
 - Nie przedstawiaj planu działań technicznych przed prostym wywołaniem programu `branch`.
@@ -61,23 +65,41 @@ W pierwszej kolejności rozpoznaj, czego użytkownik chce od programu:
 
 - Czy chce zobaczyć listę komend i parametrów? Wtedy wykonaj `branch help`.
 - Czy chce zobaczyć stan workflow? Wtedy wykonaj `branch status`.
-- Czy chce zwolnić imię agenta? Wtedy wykonaj `branch forget-name <imię>`.
+- Czy chce uzgodnić lokalny stan po checkout albo pull? Wtedy wykonaj `branch reconcile`.
+- Czy chce zsynchronizować starszy workflow bez markera? Wtedy przejdź do **Branch sync**.
 - Czy chce rozpocząć workflow? Wtedy przejdź do **Branch start**.
 - Czy chce domknąć workflow? Wtedy przejdź do **Branch finish**.
 
-Dla `start` i `finish` użyj szczegółowych procedur poniżej. Dla pozostałych komend oprzyj się na `branch help <command>` i wyniku programu.
+Dla `reconcile`, `sync`, `start` i `finish` użyj szczegółowych procedur poniżej. Dla pozostałych komend oprzyj się na `branch help <command>` i wyniku programu.
 
-## Branch get-name
+## Branch reconcile
 
-`branch get-name [imię]` rezerwuje imię dla sesji agenta. Bez parametru program wybiera pierwsze wolne imię z konfiguracji. Z parametrem próbuje zarezerwować podane imię.
+`branch reconcile` uzgadnia lokalny cache `.workai\branch-state.json` z markerem osiągalnym z aktualnego brancha Git. Używaj tej komendy po checkout albo pull oraz wtedy, gdy lokalny stan pochodzi z wcześniejszej pracy na innym komputerze.
 
-Po udanym wywołaniu zapamiętaj zwrócone imię jako imię agenta w tej sesji.
+Komenda może:
 
-## Branch forget-name
+1. odtworzyć brakujący lokalny stan z markera,
+2. zastąpić czysty, stary stan dotyczący innego workflow,
+3. usunąć czysty, nieaktualny stan po powrocie na branch bazowy,
+4. pozostawić bez zmian prawidłowy stan bieżącego workflow.
 
-`branch forget-name <imię>` zwalnia globalną sesję agenta - a imie zwraca do puli wolnych imion. Używaj tej komendy na wyraźne życzenie użytkownika.
+Jeśli zastąpienie stanu mogłoby utracić informacje przy brudnym worktree, program zatrzymuje się. `branch reconcile --clear-sessions` stosuj tylko na wyraźne życzenie użytkownika.
 
-Komenda nie domyka workflow brancha i nie zmienia lokalnego stanu `.workai`.
+## Branch sync
+
+`branch sync` pozostaje komendą awaryjną dla starszego workflow, który nie ma jeszcze markera Git. Bez `--base` wykonuje tę samą bezpieczną rekoncyliację co `branch reconcile`; nie przepisuje już automatycznie nazwy brancha roboczego na aktualny branch.
+
+Jeśli na aktualnym branchu istnieje marker albo prawidłowy lokalny stan, wykonaj:
+
+`branch sync`
+
+Jeśli workflow nie ma ani markera, ani lokalnego stanu, a użytkownik chce go świadomie odtworzyć, zapytaj: do którego brancha obecna gałąź ma zostać zintegrowana przy `branch finish`? Dopiero po odpowiedzi i przy czystym worktree wykonaj:
+
+`branch sync --base <branch>`
+
+Nie zgaduj wartości `--base`. Git nie przechowuje pewnej informacji o intencji bazowej gałęzi, więc jest to świadoma decyzja użytkownika.
+
+`branch sync --clear-sessions` uruchamiaj tylko na wyraźne życzenie użytkownika albo gdy komunikat programu wskazuje, że lokalne sesje blokują odzyskanie kontroli nad workflow.
 
 ## Branch start
 
@@ -135,7 +157,9 @@ Jak widać dialog z użytkownikiem jest bardzo prosty i nie zawiera żadnych szc
 Branch finish to komenda zamykająca gałąź. Jej wywołanie to: `branch finish`.
 Jak widać nie trzeba żadnych parametrów, więc możesz od razu ją wywołać. To co ona zwróci pokieruje twoją konwersacją z użytkownikiem. Jeśli program zakończy się powodzeniem, poinformuj użytkownika krótko, że branch został domknięty. Jeśli był jakiś problem, przekaż użytkownikowi komunikat programu i zatrzymaj się przed dalszymi działaniami, chyba że program sam podpowiada następny krok.
 
-`branch finish` nie zwalnia imienia agenta. Do tego służy osobna komenda `branch forget-name <imię>`.
+Wyjątek techniczny na Windows: jeżeli bieżący workflow aktualizuje dokładnie ten plik `.exe`, który zwraca `(Get-Command branch).Source`, nie uruchamiaj `finish` z tej ścieżki. Windows może zablokować podmianę działającego pliku podczas checkoutu. Skopiuj plik do `$env:TEMP`, uruchom `finish` z kopii, a po zakończeniu usuń kopię. Wykonaj to automatycznie, bez angażowania użytkownika; helper nie może trafić do commita.
+
+`branch finish` nie zwalnia imienia agenta. Globalna sesja agenta jest obsługiwana poza programem `branch`, na przykład przez `agent-signal`.
 
 Typowe sytuacje problemowe przy `branch finish`:
 
@@ -164,7 +188,7 @@ Ten skill służy przede wszystkim do rozmowy z użytkownikiem o `branch start` 
 
 Obsługa `branch step-begin` i `branch step-end` jest zwykle pilnowana przez reguły pracy agenta, a nie przez ten skill. Agent powinien wiedzieć tylko tyle, że są to komendy rozpoczynania i kończenia kroku agenta, wykonywane przed i po zmianach w plikach.
 
-Jeśli użytkownik wyraźnie pyta o kroki agentów, `flush`, pulę imion, aktywne okno albo powiadomienia, nie zgaduj z pamięci. Użyj `branch help <command>` albo zajrzyj do:
+Jeśli użytkownik wyraźnie pyta o kroki agentów, `flush`, `reconcile`, `sync`, aktywne okno albo powiadomienia, nie zgaduj z pamięci. Użyj `branch help <command>` albo zajrzyj do:
 
 1. `branch-techdocs.md` - krótki techniczny opis programu,
 2. `branch-notifier.md` - konfiguracja powiadomień,

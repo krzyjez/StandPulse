@@ -1,6 +1,6 @@
 interface:
   display_name: "branch"
-  short_description: "Obsługa workflow pracy na branchu."
-  default_prompt: "Use $branch to start, inspect, or finish the branch workflow for this repository."
+  short_description: "Pomagaj użytkownikowi rozpoczynać albo zakończyć pracę z programem `branch` w bieżącym repozytorium. Używaj także wtedy, gdy użytkownik c..."
+  default_prompt: "Use $branch for: Pomagaj użytkownikowi rozpoczynać albo zakończyć pracę z programem `branch` w bieżącym repozytorium. Używaj także wtedy, gdy użytkownik c..."
 policy:
   allow_implicit_invocation: true

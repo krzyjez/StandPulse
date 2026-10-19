@@ -8,14 +8,13 @@ Nie opisuje rozmowy z użytkownikiem o `branch start` i `branch finish`; od tego
 ```powershell
 branch help [command]
 branch status
+branch reconcile [--clear-sessions]
+branch sync [--base <branch>] [--clear-sessions]
 branch start <branch-name> "<description>"
-branch get-name [name]
 branch step-begin <name>
 branch step-end <name> "<description>"
 branch flush [--force]
 branch finish
-branch forget-name <name>
-branch reset-names
 branch active-window
 ```
 
@@ -23,12 +22,12 @@ Pełną składnię i bieżące komunikaty sprawdzaj przez `branch help <command>
 
 ## Imię agenta
 
-Agent powinien znać swoje imię z `init`.
+Agent powinien znać swoje imię z `init-session`.
 
 Jeśli imienia nie ma w kontekście, użyj awaryjnie:
 
 ```powershell
-branch get-name
+agent-signal get-name
 ```
 
 Od tego momentu używaj tego samego imienia w:
@@ -52,10 +51,29 @@ Opis w `step-end` ma krótko powiedzieć, co zostało zmienione. Może zawierać
 ## Czego agent nie robi
 
 1. Nie edytuj ręcznie plików `.workai`.
-2. Nie zaglądaj do globalnego stanu rezerwacji imion.
+2. Nie zaglądaj do globalnego stanu sesji agentów.
 3. Nie zgaduj imienia agenta.
 4. Nie używaj `branch step-begin --noname`.
-5. Nie uruchamiaj `branch reset-names`, jeśli użytkownik wyraźnie o to nie poprosi albo komunikat programu tego nie sugeruje.
+
+## Reconcile i sync
+
+`branch reconcile` jest zwykłym sposobem uzgodnienia lokalnego `.workai\branch-state.json` z markerem zapisanym w historii aktualnego brancha. Uruchamiaj go po checkout albo pull. Odtwarza stan na drugim komputerze, usuwa czysty stan pozostawiony po powrocie na bazę i nigdy nie tworzy układu, w którym branch roboczy jest równy bazowemu.
+
+`branch sync` służy do awaryjnego odzyskania starszego workflow bez markera. Bez parametrów korzysta z tej samej logiki co `reconcile`.
+
+Jeśli stan istnieje, użyj:
+
+```powershell
+branch sync
+```
+
+Jeśli nie istnieje ani stan, ani marker, zapytaj użytkownika, do którego brancha obecna gałąź ma zostać zintegrowana przy `branch finish`, upewnij się, że worktree jest czysty, a potem użyj:
+
+```powershell
+branch sync --base <branch>
+```
+
+Nie zgaduj `--base`. To jest decyzja użytkownika.
 
 ## Powiadomienia
 

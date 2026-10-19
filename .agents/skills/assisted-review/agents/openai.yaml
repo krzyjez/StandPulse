@@ -1,0 +1,7 @@
+interface:
+  display_name: "assisted-review"
+  short_description: "Review document comments at the concept level."
+  default_prompt: "Use $assisted-review to resolve document comments at the concept level before applying approved edits."
+
+policy:
+  allow_implicit_invocation: true
