@@ -54,6 +54,21 @@ internal static class Program
         return 0;
       }
 
+      if (options.Command == "samples")
+      {
+        var received = 0;
+        await foreach (var line in client.WatchSamplesAsync(cancellation.Token))
+        {
+          _WriteStreamLine(line);
+          received++;
+
+          if (options.Count.HasValue && received >= options.Count.Value)
+            return 0;
+        }
+
+        return 0;
+      }
+
       _WriteHelp();
       return 1;
     }
@@ -79,11 +94,36 @@ internal static class Program
     Console.WriteLine("  StandPulse.SensorProbe.exe get");
     Console.WriteLine("  StandPulse.SensorProbe.exe watch");
     Console.WriteLine("  StandPulse.SensorProbe.exe watch --count 3");
+    Console.WriteLine("  StandPulse.SensorProbe.exe samples");
     Console.WriteLine("  StandPulse.SensorProbe.exe get --pipe StandPulse.Sensor");
     Console.WriteLine();
     Console.WriteLine("Opcje:");
     Console.WriteLine("  --pipe <name>   Nazwa pipe. Domyślnie: StandPulse.Sensor");
-    Console.WriteLine("  --count <n>     Liczba statusów do odczytu w trybie watch.");
+    Console.WriteLine("  --count <n>     Liczba linii do odczytu w trybie watch albo samples.");
+  }
+
+  // Wypisuje linię strumienia samples: próbkę z odległościami obu celów albo zwykły status.
+  private static void _WriteStreamLine(string line)
+  {
+    using var document = JsonDocument.Parse(line);
+    var root = document.RootElement;
+    if (root.TryGetProperty("type", out var type) && type.GetString() == "sample")
+    {
+      Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss.fff} sample decision={_Read(root, "decision")} target={_Read(root, "targetDistanceCm")}cm/{_Read(root, "maxDistanceCm")} status={_Read(root, "targetStatus")} moving={_Read(root, "movingDistanceCm")}cm/E{_Read(root, "movingEnergy")} static={_Read(root, "staticDistanceCm")}cm/E{_Read(root, "staticEnergy")} detection={_Read(root, "distanceCm")}cm");
+      return;
+    }
+
+    _WriteSnapshot(JsonSerializer.Deserialize<SensorSnapshot>(line, SensorPipeClient.JsonOptions)
+                   ?? throw new InvalidDataException("StandPulse.SensorHost returned an invalid response."));
+  }
+
+  // Czyta pole próbki jako tekst; brak albo null daje "-".
+  private static string _Read(JsonElement root, string name)
+  {
+    if (!root.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null)
+      return "-";
+
+    return value.ValueKind == JsonValueKind.String ? value.GetString() ?? "-" : value.GetRawText();
   }
 
   // Wypisuje status w czytelnej formie i zachowuje pełny JSON.
@@ -97,7 +137,7 @@ internal static class Program
 internal sealed class SensorPipeClient
 {
   private static readonly Encoding PipeEncoding = new UTF8Encoding(false);
-  private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+  internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
   {
     Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
   };
@@ -143,6 +183,29 @@ internal sealed class SensorPipeClient
         yield break;
 
       yield return _ParseSnapshot(line);
+    }
+  }
+
+  /// <summary>Subskrybuje strumień samples i zwraca surowe linie JSON (status albo sample).</summary>
+  public async IAsyncEnumerable<string> WatchSamplesAsync(
+    [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+  {
+    await using var pipe = await _ConnectAsync(cancellationToken);
+    using var reader = new StreamReader(pipe, PipeEncoding, false, 1024, true);
+    await using var writer = new StreamWriter(pipe, PipeEncoding, 1024, true)
+    {
+      AutoFlush = true
+    };
+
+    await writer.WriteLineAsync("""{"command":"samples"}""".AsMemory(), cancellationToken);
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+      var line = await reader.ReadLineAsync(cancellationToken);
+      if (line is null)
+        yield break;
+
+      yield return line;
     }
   }
 
@@ -226,7 +289,7 @@ internal sealed record ProbeOptions(
       return new ProbeOptions(command, pipeName, count, true);
     }
 
-    return command is "get" or "watch"
+    return command is "get" or "watch" or "samples"
       ? new ProbeOptions(command, pipeName, count, false)
       : new ProbeOptions(command, pipeName, count, true);
   }

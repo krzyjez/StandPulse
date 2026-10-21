@@ -213,6 +213,27 @@ Subskrypcja zmian:
 
 W trybie `watch` host wysyła aktualny status po połączeniu oraz kolejne linie po zmianie stabilnego statusu sensora albo statusu sesji Windows.
 
+Strumień próbek:
+
+```json
+{"command":"samples"}
+```
+
+Host wysyła najpierw aktualny snapshot `status` (taki sam jak w `get`), a potem każdą próbkę sensora od razu po odczycie z COM (około 5 na sekundę) oraz każdą zmianę stabilnego statusu jako linię `status`, tak jak w `watch`. Linie rozróżnia pole `type`. Przykładowa próbka:
+
+```json
+{"type":"sample","at":"2026-10-19T23:30:01.123+02:00","present":true,"targetStatus":"staticTarget","targetDistanceCm":64,"distanceCm":272,"movingDistanceCm":64,"movingEnergy":40,"staticDistanceCm":64,"staticEnergy":55,"maxDistanceCm":200,"decision":"presence"}
+```
+
+1. `at` - czas odczytu próbki przez host (ISO 8601 z offsetem).
+2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget` albo `bothTargets`.
+3. `targetDistanceCm` - odległość celu uznanego za osobę; główna liczba do pokazania. `null`, gdy radar nie widzi celu.
+4. `decision` - `presence` albo `absence` dla tej jednej próbki, przed stabilizacją `stateChangeDelaySeconds`. Gdy `targetDistanceCm` jest `null`, `decision` jest zawsze `absence`.
+5. `distanceCm`, `movingDistanceCm`, `movingEnergy`, `staticDistanceCm`, `staticEnergy` - surowe pola radaru do diagnostyki; mogą być `null` przy starszym firmware.
+6. `maxDistanceCm` - aktualny próg `presence.maxDistanceCm`.
+
+Odłączenie sensora albo błąd widać od razu jako linię `status` z `sensorStatus` równym `sensorNotAvailable` albo `error`; próbki wtedy przestają przychodzić. Zerwane połączenie z pipe oznacza, że host nie działa. Kolejka próbek na klienta ma limit 256 linii i przy zapełnieniu odrzuca najstarsze, więc wolny klient nie blokuje hosta.
+
 ## Klient C#
 
 Katalog `examples` zawiera pojedynczy plik klienta C#:
@@ -225,6 +246,7 @@ Plik można skopiować do innej aplikacji C# i używać metod:
 
 1. `GetStatusAsync()` - pobiera aktualny status.
 2. `WatchAsync()` - odbiera aktualny status i późniejsze zmiany.
+3. `WatchSamplesAsync()` - odbiera strumień `samples`; każdy element ma ustawione `Status` albo `Sample`.
 
 Gdy host nie działa, połączenie kończy się `TimeoutException` po 5 s (czas można zmienić parametrem `connectTimeout` konstruktora). Odpowiedź hosta innego typu niż `status` kończy się `InvalidDataException`.
 
@@ -254,6 +276,12 @@ Pobranie aktualnego statusu:
 
 ```powershell
 StandPulse.SensorProbe.exe get
+```
+
+Podgląd próbek na żywo, z odległościami obu celów:
+
+```powershell
+StandPulse.SensorProbe.exe samples
 ```
 
 Subskrypcja trzech statusów:

@@ -31,16 +31,32 @@ W projekcie są dwa osobne odcinki komunikacji i dlatego widać dwie różne pr�
 |---|---|---|
 | Radar -> XIAO | `radarSerial.begin(256000, SERIAL_8N1, D2, D3);` | XIAO czyta radar mmWave po UART na pinach `D2/D3`. `256000` to fabryczna prędkość transmisji radaru. |
 | XIAO -> PC | `Serial.begin(115200);` | XIAO wysyła tekstowe linie JSON do Windows przez USB serial / `COM4`. |
-| Częstotliwość próbek | `delay(200);` | Firmware wysyła około 5 próbek na sekundę do PC. |
+| Częstotliwość próbek | `REPORT_INTERVAL_MS = 200` | Firmware wysyła do PC najnowszą ramkę radaru co 200 ms, czyli około 5 próbek na sekundę. |
 
-Ważne: `256000` to **prędkość transmisji UART**, a nie częstotliwość odczytu. Częstotliwość wysyłania próbek wynika teraz głównie z `delay(200)`.
+Ważne: `256000` to **prędkość transmisji UART**, a nie częstotliwość odczytu. Radar nadaje ramki częściej; firmware wysyła tylko najnowszą z każdego okna 200 ms.
+
+## Ramka radaru
+
+Radar nadaje ramki zgodne z protokołem HLK-LD2410. Firmware parsuje je sam, bez `getStatus()` z biblioteki `mmwave_for_xiao`: biblioteka udostępnia tylko jedną odległość, a jej parser kopiuje bufor z błędnym indeksem.
+
+| Bajty | Znaczenie |
+|---|---|
+| 0-3 | Nagłówek `F4 F3 F2 F1`. |
+| 4-5 | Długość danych (little-endian). |
+| 6 | Typ: `0x02` dane podstawowe, `0x01` tryb engineering. |
+| 7 | `0xAA`. |
+| 8 | Stan celu: brak, ruchomy, nieruchomy, oba. |
+| 9-10, 11 | Odległość celu ruchomego (cm) i jego energia. |
+| 12-13, 14 | Odległość celu nieruchomego (cm) i jego energia. |
+| 15-16 | Detection distance (cm) - jedyne pole wystawiane przez bibliotekę. |
+| ostatnie 4 | Ogon `F8 F7 F6 F5`. |
 
 ## Co wysyła firmware
 
 Firmware wysyła pojedyncze linie JSON, na przykład:
 
 ```json
-{"present":true,"targetStatus":"StaticTarget","distanceCm":30,"radarMode":2}
+{"present":false,"targetStatus":"NoTarget","distanceCm":272,"movingDistanceCm":80,"movingEnergy":0,"staticDistanceCm":80,"staticEnergy":6,"radarMode":2}
 ```
 
 Znaczenie pól:
@@ -49,8 +65,12 @@ Znaczenie pól:
 |---|---|
 | `present` | Uproszczony bool: `true` dla `MovingTarget`, `StaticTarget` albo `BothTargets`. |
 | `targetStatus` | Etykieta z radaru: `NoTarget`, `MovingTarget`, `StaticTarget`, `BothTargets` albo `ErrorFrame`. |
-| `distanceCm` | Odległość raportowana przez radar w centymetrach. Wcześniejsza robocza nazwa `distanceMm` była myląca. |
+| `distanceCm` | Detection distance z ramki radaru w centymetrach. W pustym pokoju pokazuje około 272 cm, czyli najpewniej ścianę naprzeciw sensora, a nie osobę. Wcześniejsza robocza nazwa `distanceMm` była myląca. |
+| `movingDistanceCm`, `movingEnergy` | Odległość (cm) i energia (0-100) celu ruchomego. Bez celu energia jest bliska zera, a odległość zostaje z poprzedniego odczytu. |
+| `staticDistanceCm`, `staticEnergy` | Odległość (cm) i energia (0-100) celu nieruchomego. |
 | `radarMode` | Tryb raportowania radaru: `2` oznacza podstawowe dane celu, `1` oznacza tryb engineering z dodatkowymi energiami bramek. |
+
+Gdy przez ponad sekundę nie przyjdzie żadna poprawna ramka, firmware co 200 ms wysyła zdarzenie `{"event":"radar_read_error","millis":...,"silenceMs":...,"invalidFrames":...}`. SensorHost po `presence.maxConsecutiveSensorErrors` takich zdarzeniach publikuje status `error`.
 
 ## Odczyt danych w Windows
 

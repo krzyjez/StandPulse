@@ -71,6 +71,29 @@ public sealed class StandPulseSensorClient
     }
   }
 
+  /// <summary>Subskrybuje strumień samples: najpierw aktualny status, potem każdą próbkę sensora (~5/s) i każdą zmianę stabilnego statusu.</summary>
+  public async IAsyncEnumerable<StandPulseSensorStreamItem> WatchSamplesAsync(
+    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+  {
+    using var pipe = await _ConnectAsync(cancellationToken);
+    using var reader = new StreamReader(pipe, PipeEncoding, false, 1024, true);
+    await using var writer = new StreamWriter(pipe, PipeEncoding, 1024, true)
+    {
+      AutoFlush = true
+    };
+
+    await writer.WriteLineAsync("""{"command":"samples"}""".AsMemory(), cancellationToken);
+
+    while (!cancellationToken.IsCancellationRequested)
+    {
+      var line = await reader.ReadLineAsync(cancellationToken);
+      if (line is null)
+        yield break;
+
+      yield return _ParseStreamItem(line);
+    }
+  }
+
   // Otwiera połączenie z lokalnym named pipe.
   private async Task<NamedPipeClientStream> _ConnectAsync(CancellationToken cancellationToken)
   {
@@ -90,6 +113,23 @@ public sealed class StandPulseSensorClient
       pipe.Dispose();
       throw;
     }
+  }
+
+  // Rozdziela linie strumienia samples na próbki i statusy według pola type.
+  private static StandPulseSensorStreamItem _ParseStreamItem(string line)
+  {
+    string? type;
+    using (var document = JsonDocument.Parse(line))
+      type = document.RootElement.TryGetProperty("type", out var typeProperty) ? typeProperty.GetString() : null;
+
+    if (type == "sample")
+    {
+      var sample = JsonSerializer.Deserialize<StandPulseSensorSample>(line, JsonOptions)
+                   ?? throw new InvalidDataException("StandPulse.SensorHost returned an invalid sample.");
+      return new StandPulseSensorStreamItem(null, sample);
+    }
+
+    return new StandPulseSensorStreamItem(_ParseSnapshot(line), null);
   }
 
   // Parsuje pojedynczą linię JSON ze snapshotem statusu.
@@ -125,6 +165,26 @@ public sealed record StandPulseSensorSnapshot(
   DateTimeOffset? LastSampleAt,
   DateTimeOffset StableSince,
   DateTimeOffset WorkPresenceSince);
+
+/// <summary>Pojedyncza próbka sensora ze strumienia samples; Decision dotyczy tej próbki, przed stabilizacją. Brak TargetDistanceCm oznacza zawsze Absence.</summary>
+public sealed record StandPulseSensorSample(
+  string Type,
+  DateTimeOffset At,
+  bool Present,
+  string TargetStatus,
+  int? TargetDistanceCm,
+  int? DistanceCm,
+  int? MovingDistanceCm,
+  int? MovingEnergy,
+  int? StaticDistanceCm,
+  int? StaticEnergy,
+  int MaxDistanceCm,
+  StandPulseSensorStatus Decision);
+
+/// <summary>Element strumienia samples: dokładnie jedno z pól jest ustawione.</summary>
+public sealed record StandPulseSensorStreamItem(
+  StandPulseSensorSnapshot? Status,
+  StandPulseSensorSample? Sample);
 
 /// <summary>Stabilny status obecności udostępniany aplikacjom przez StandPulse.SensorHost.</summary>
 public enum StandPulseSensorStatus
