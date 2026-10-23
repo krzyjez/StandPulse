@@ -1,3 +1,15 @@
+# 0.1.8 2026-10-23 09:56
+- Przy pelnej kolejce klienta `samples` przepadaja tylko probki, a linie `status` zawsze dochodza / Wizualizer po wznowieniu nie przegapi `sensorNotAvailable` ani `error`
+
+# 0.1.7 2026-10-21 16:38
+- `targetDistanceCm` to najmniejsza odleglosc zgloszonych celow i detection distance, wygladzona mediana z 5 probek / Odczyt osoby przy biurku nie skacze juz do 200-300 cm przez dalekie odbicia
+
+# 0.1.6 2026-10-19 23:41
+- Firmware parsuje ramki radaru samodzielnie i wysyla odleglosci oraz energie celu ruchomego i nieruchomego / Widac, ze dotychczasowe `distanceCm` pokazuje tlo (sciana ~2,7 m), a nie osobe
+- Decyzja obecnosci SensorHost uzywa `targetDistanceCm` wybieranego wedlug statusu celu / Odchylenie na krzesle nie powinno juz dawac odczytu tla ponad progiem
+- Dodano komende pipe `samples` z kazda probka i zmianami statusu / Wizualizer moze pokazac biezacy odczyt czujnika z opoznieniem ponizej 1 s
+- Klient C# dostal `WatchSamplesAsync`, a SensorProbe komende `samples` / Pomiary odleglosci da sie robic na zywo bez czytania logu
+
 # 0.1.5 2026-10-19 20:26
 - Ograniczono log trwalego `radar_read_error` do podsumowania co minute i wpisu o powrocie probek / Wielogodzinna awaria radaru nie wypiera historii z rotowanego logu
 - Zapis logu SensorHost nie rzuca juz wyjatkow do wywolujacego / Pelny dysk albo zablokowany plik przy rotacji nie zatrzymuje odczytu sensora ani procesu

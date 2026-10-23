@@ -104,6 +104,12 @@ Subskrypcja ograniczona do kilku komunikatów:
 StandPulse.SensorProbe.exe watch --count 3
 ```
 
+Podgląd każdej próbki na żywo, z odległościami i energiami obu celów:
+
+```powershell
+StandPulse.SensorProbe.exe samples
+```
+
 ## Konfiguracja
 
 Host używa pliku:
@@ -183,10 +189,15 @@ Klucz Cloud API nie powinien być zapisywany w pliku efektora. Dla domyślnej ko
 Podstawowa reguła obecności:
 
 ```text
-presence = rawPresent && distanceCm < maxDistanceCm
+presence = rawPresent && targetDistanceCm < maxDistanceCm
 ```
 
-`rawPresent` wynika z firmware i statusu celu radaru. `distanceCm` ogranicza obecność do strefy biurka.
+`rawPresent` wynika z firmware i statusu celu radaru. `targetDistanceCm` ogranicza obecność do strefy biurka. Host liczy ją w dwóch krokach:
+
+1. Z jednej ramki bierze najmniejszą odległość spośród celów wskazanych przez status (`movingDistanceCm` dla `MovingTarget`, `staticDistanceCm` dla `StaticTarget`, oba dla `BothTargets`) i `distanceCm` (detection distance). Osoba siedzi bliżej sensora niż oparcie krzesła czy ściana, więc dalekie odbicia nie wypychają jej poza próg. Przy `NoTarget` odległości nie ma.
+2. Wynik wygładza medianą z ostatnich 5 próbek (około 1 s), bo radar ma bramki co 75 cm i pojedyncze odczyty skaczą o kilkadziesiąt centymetrów. Próbka bez celu daje brak odległości od razu.
+
+Pomiar 2026-10-21 przy biurku (100 próbek): odległości celu ruchomego i nieruchomego skakały od 77 do 300 cm, detection distance mieściło się w 75–162 cm, a reguła najmniejszej odległości ani razu nie przekroczyła 162 cm. W pustym pokoju detection distance pokazuje około 272 cm (ściana), ale radar zgłasza wtedy `NoTarget`.
 
 Zmiana statusu jest publikowana dopiero wtedy, gdy kandydat utrzymuje się co najmniej przez `stateChangeDelaySeconds`.
 
@@ -249,6 +260,27 @@ Subskrypcja zmian:
 
 W trybie `watch` host wysyła aktualny snapshot po przyjęciu subskrypcji (zmiana z chwili subskrypcji może przyjść dodatkowo jako powtórzona linia), a potem wysyła kolejne linie po zmianie stabilnego statusu sensora albo statusu sesji Windows. Zmiana samego `lastSampleAt` nie tworzy zdarzenia.
 
+Strumień próbek:
+
+```json
+{"command":"samples"}
+```
+
+Host wysyła najpierw aktualny snapshot `status` (taki sam jak w `get`), a potem każdą próbkę sensora od razu po odczycie z COM (około 5 na sekundę) oraz każdą zmianę stabilnego statusu jako linię `status`, tak jak w `watch`. Linie rozróżnia pole `type`. Przykładowa próbka:
+
+```json
+{"type":"sample","at":"2026-10-19T23:30:01.123+02:00","present":true,"targetStatus":"staticTarget","targetDistanceCm":64,"distanceCm":272,"movingDistanceCm":64,"movingEnergy":40,"staticDistanceCm":64,"staticEnergy":55,"maxDistanceCm":200,"decision":"presence"}
+```
+
+1. `at` - czas odczytu próbki przez host (ISO 8601 z offsetem).
+2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget`, `bothTargets` albo `unknown` przy nieznanym kodzie stanu z radaru.
+3. `targetDistanceCm` - wygładzona odległość osoby (opis wyżej w „Interpretacja obecności”); główna liczba do pokazania. `null`, gdy radar w tej próbce nie widzi celu.
+4. `decision` - `presence` albo `absence` dla tej jednej próbki, przed stabilizacją `stateChangeDelaySeconds`. Gdy `targetDistanceCm` jest `null`, `decision` jest zawsze `absence`.
+5. `distanceCm`, `movingDistanceCm`, `movingEnergy`, `staticDistanceCm`, `staticEnergy` - surowe pola radaru do diagnostyki; mogą być `null` przy starszym firmware.
+6. `maxDistanceCm` - aktualny próg `presence.maxDistanceCm`.
+
+Odłączenie sensora albo błąd widać od razu jako linię `status` z `sensorStatus` równym `sensorNotAvailable` albo `error`; próbki wtedy przestają przychodzić. Zerwane połączenie z pipe oznacza, że host nie działa. Kolejka klienta mieści najwyżej 256 próbek; gdy klient przestanie czytać, kolejne próbki przepadają, ale linie `status` zawsze trafiają do kolejki, więc po wznowieniu klient dostanie każdą zmianę statusu.
+
 ## Fake sensor
 
 Tryb `fake` służy do sprawdzania logiki hosta bez realnego sensora.
@@ -272,7 +304,8 @@ Aktualnie sprawdzane scenariusze:
 7. linie ze złym typem pola nie zmieniają `presence`,
 8. pojedyncze `radar_read_error` między próbkami nie dają `error`,
 9. powrót z `error` do `presence`,
-10. szum startowy jako `error`.
+10. strumień `samples` dostarcza kolejne próbki z odstępem poniżej 1 s,
+11. szum startowy jako `error`.
 
 ## Publikacja
 

@@ -216,6 +216,10 @@ internal sealed class SensorHostService
   private readonly SensorStateStore _store;
   private readonly SensorHostLogger _logger;
   private static readonly TimeSpan SensorErrorLogInterval = TimeSpan.FromMinutes(1);
+  // 5 próbek to około 1 s przy 5 próbkach na sekundę z firmware.
+  private const int TargetDistanceWindow = 5;
+
+  private readonly Queue<int?> _recentTargetDistances = new();
 
   private int _consecutiveSensorErrors;
   private DateTimeOffset _lastSensorErrorLogAt;
@@ -396,24 +400,20 @@ internal sealed class SensorHostService
       if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
         _WriteOperationalLog($"Sensor wysyła poprawne próbki po {_consecutiveSensorErrors} kolejnych błędach firmware.");
       _consecutiveSensorErrors = 0;
+      var targetDistanceCm = _SmoothTargetDistance(sample.TargetDistanceCm);
       var presentAtDesk = sample.Present &&
-                          sample.DistanceCm.HasValue &&
-                          sample.DistanceCm.Value < _settings.Presence.MaxDistanceCm;
+                          targetDistanceCm.HasValue &&
+                          targetDistanceCm.Value < _settings.Presence.MaxDistanceCm;
       var sampleStatus = presentAtDesk ? SensorStatus.Presence : SensorStatus.Absence;
-      var sampleDecision = new SensorSampleDecision(
-        sample.Present,
-        sample.TargetStatus,
-        sample.DistanceCm,
-        _settings.Presence.MaxDistanceCm,
-        sampleStatus);
+      var sampleDecision = new SensorSampleDecision(sample, targetDistanceCm, _settings.Presence.MaxDistanceCm, sampleStatus);
 
-      _WriteDebug(
-        $"SAMPLE present={sample.Present} targetStatus={sample.TargetStatus} distanceCm={sample.DistanceCm?.ToString() ?? "-"} maxDistanceCm={_settings.Presence.MaxDistanceCm} decision={sampleStatus}");
+      _WriteDebug($"SAMPLE {SensorStateStore.FormatSampleDecision(sampleDecision)}");
 
       _store.RecordSample(
         sampleStatus,
         sampleDecision,
         TimeSpan.FromSeconds(_settings.Presence.StateChangeDelaySeconds));
+      _store.PublishSample(SensorSampleMessage.Create(sampleDecision, DateTimeOffset.Now));
       _WriteDebug($"STATE {_FormatDebugState()}");
     }
     catch (Exception ex) when (ex is JsonException or InvalidOperationException or FormatException)
@@ -428,6 +428,20 @@ internal sealed class SensorHostService
         _RecordStartupInvalidLine("json-parse-error");
       }
     }
+  }
+
+  // Mediana z ostatnich próbek tłumi skoki wynikające z bramek radaru (75 cm); brak celu w bieżącej próbce daje null od razu.
+  private int? _SmoothTargetDistance(int? rawDistanceCm)
+  {
+    _recentTargetDistances.Enqueue(rawDistanceCm);
+    if (_recentTargetDistances.Count > TargetDistanceWindow)
+      _recentTargetDistances.Dequeue();
+
+    if (rawDistanceCm is null)
+      return null;
+
+    var values = _recentTargetDistances.OfType<int>().Order().ToList();
+    return values[values.Count / 2];
   }
 
   // Pilnuje, żeby nieskończone śmieci startowe sensora nie zostawiły hosta bez diagnozy.
@@ -606,16 +620,35 @@ internal sealed class SensorHostService
       return;
     }
 
+    if (command?.Command == "samples")
+    {
+      // Jak w watch: subskrypcja przed snapshotem, żeby nie zgubić zmiany z chwili połączenia.
+      using var subscription = _store.SubscribeStream();
+      _WriteStatus(writer, _store.GetSnapshot());
+      _WriteStreamMessages(writer, subscription, cancellationToken);
+      return;
+    }
+
     writer.WriteLine("{\"type\":\"error\",\"message\":\"Unknown command.\"}");
   }
 
   // Wysyła klientowi kolejne zmiany stabilnego statusu.
-  private static void _WatchStatusChanges(StreamWriter writer, SensorStateStore.SensorSubscription subscription, CancellationToken cancellationToken)
+  private static void _WatchStatusChanges(StreamWriter writer, SensorStateStore.SensorSubscription<SensorSnapshot> subscription, CancellationToken cancellationToken)
   {
     while (subscription.Reader.WaitToReadAsync(cancellationToken).AsTask().GetAwaiter().GetResult())
     {
       while (subscription.Reader.TryRead(out var snapshot))
         _WriteStatus(writer, snapshot);
+    }
+  }
+
+  // Wysyła klientowi samples kolejne próbki i zmiany statusu, każdą jako linię JSON swojego typu.
+  private static void _WriteStreamMessages(StreamWriter writer, SensorStateStore.SensorSubscription<object> subscription, CancellationToken cancellationToken)
+  {
+    while (subscription.Reader.WaitToReadAsync(cancellationToken).AsTask().GetAwaiter().GetResult())
+    {
+      while (subscription.Reader.TryRead(out var message))
+        writer.WriteLine(JsonSerializer.Serialize(message, message.GetType(), MessageJsonOptions));
     }
   }
 
@@ -1297,7 +1330,12 @@ internal static class WindowsSessionProbe
 internal sealed class SensorStateStore
 {
   private readonly object _syncRoot = new();
+  // Limit próbek w kolejce klienta samples chroni pamięć hosta przed klientem, który przestał czytać.
+  private const int StreamQueueCapacity = 256;
+
   private readonly ConcurrentDictionary<Guid, ChannelWriter<SensorSnapshot>> _subscriptions = new();
+  // Klienci samples dostają próbki i zmiany statusu w jednej kolejce, w kolejności zdarzeń.
+  private readonly ConcurrentDictionary<Guid, Channel<object>> _streamSubscriptions = new();
   private readonly Action<string>? _writeLog;
 
   private SensorSnapshot _snapshot = new(
@@ -1333,12 +1371,31 @@ internal sealed class SensorStateStore
   }
 
   /// <summary>Rejestruje subskrypcję zmian stabilnego statusu.</summary>
-  public SensorSubscription Subscribe()
+  public SensorSubscription<SensorSnapshot> Subscribe()
   {
     var channel = Channel.CreateUnbounded<SensorSnapshot>();
     var id = Guid.NewGuid();
     _subscriptions[id] = channel.Writer;
-    return new SensorSubscription(id, channel.Reader, this);
+    return new SensorSubscription<SensorSnapshot>(channel.Reader, () => _subscriptions.TryRemove(id, out _));
+  }
+
+  /// <summary>Rejestruje subskrypcję strumienia samples: każda próbka oraz każda zmiana stabilnego statusu.</summary>
+  public SensorSubscription<object> SubscribeStream()
+  {
+    var channel = Channel.CreateUnbounded<object>();
+    var id = Guid.NewGuid();
+    _streamSubscriptions[id] = channel;
+    return new SensorSubscription<object>(channel.Reader, () => _streamSubscriptions.TryRemove(id, out _));
+  }
+
+  /// <summary>Rozsyła pojedynczą próbkę do klientów samples; przy pełnej kolejce próbka przepada, ale linie status nigdy.</summary>
+  public void PublishSample(SensorSampleMessage sample)
+  {
+    foreach (var (_, channel) in _streamSubscriptions)
+    {
+      if (channel.Reader.Count < StreamQueueCapacity)
+        channel.Writer.TryWrite(sample);
+    }
   }
 
   /// <summary>Aktualizuje stabilny stan na podstawie poprawnej próbki sensora.</summary>
@@ -1489,12 +1546,6 @@ internal sealed class SensorStateStore
       SetTechnicalStatus(SensorStatus.SensorNotAvailable);
   }
 
-  // Usuwa subskrypcję po zamknięciu połączenia klienta.
-  private void _Unsubscribe(Guid id)
-  {
-    _subscriptions.TryRemove(id, out _);
-  }
-
   // Rozsyła snapshot do aktywnych subskrybentów.
   private void _Publish(SensorSnapshot snapshot, SensorSampleDecision? sampleDecision = null, string? message = null)
   {
@@ -1503,6 +1554,10 @@ internal sealed class SensorStateStore
       if (!writer.TryWrite(snapshot))
         _subscriptions.TryRemove(id, out _);
     }
+
+    // Statusy są rzadkie, więc idą bez limitu, żeby klient po wznowieniu nie przegapił np. sensorNotAvailable.
+    foreach (var (_, channel) in _streamSubscriptions)
+      channel.Writer.TryWrite(snapshot);
 
     message ??= _FormatStatusLog(snapshot, sampleDecision);
     if (_writeLog is not null)
@@ -1518,7 +1573,7 @@ internal sealed class SensorStateStore
     if (sampleDecision is null)
       return message;
 
-    return $"{message} {_FormatSampleDecision(sampleDecision)}";
+    return $"{message} {FormatSampleDecision(sampleDecision)}";
   }
 
   // Formatuje opcjonalny znacznik czasu do logu zmiany stanu.
@@ -1533,7 +1588,7 @@ internal sealed class SensorStateStore
     SensorStatus to,
     SensorSampleDecision sampleDecision)
   {
-    return $"candidate start from={from} to={to} {_FormatSampleDecision(sampleDecision)}";
+    return $"candidate start from={from} to={to} {FormatSampleDecision(sampleDecision)}";
   }
 
   // Składa log anulowania kandydata, gdy próbki wracają do stabilnego stanu.
@@ -1543,7 +1598,7 @@ internal sealed class SensorStateStore
     TimeSpan after,
     SensorSampleDecision sampleDecision)
   {
-    return $"candidate cancel canceled={canceled} backTo={backTo} after={_FormatSeconds(after)}s {_FormatSampleDecision(sampleDecision)}";
+    return $"candidate cancel canceled={canceled} backTo={backTo} after={_FormatSeconds(after)}s {FormatSampleDecision(sampleDecision)}";
   }
 
   // Składa log zatwierdzonej zmiany stabilnego stanu.
@@ -1553,13 +1608,20 @@ internal sealed class SensorStateStore
     TimeSpan stableFor,
     SensorSampleDecision sampleDecision)
   {
-    return $"state change from={from} to={to} stableFor={_FormatSeconds(stableFor)}s {_FormatSampleDecision(sampleDecision)}";
+    return $"state change from={from} to={to} stableFor={_FormatSeconds(stableFor)}s {FormatSampleDecision(sampleDecision)}";
   }
 
-  // Składa szczegóły próbki istotne przy diagnozowaniu fałszywej nieobecności.
-  private static string _FormatSampleDecision(SensorSampleDecision sampleDecision)
+  /// <summary>Składa szczegóły próbki istotne przy diagnozowaniu fałszywej nieobecności, z odległościami obu celów i tła.</summary>
+  public static string FormatSampleDecision(SensorSampleDecision sampleDecision)
   {
-    return $"present={sampleDecision.Present} targetStatus={sampleDecision.TargetStatus} distanceCm={sampleDecision.DistanceCm?.ToString() ?? "-"} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
+    var sample = sampleDecision.Sample;
+    return $"present={sample.Present} targetStatus={sample.TargetStatus} targetDistanceCm={_FormatNumber(sampleDecision.TargetDistanceCm)} raw={_FormatNumber(sample.TargetDistanceCm)} moving={_FormatNumber(sample.MovingDistanceCm)}cm/{_FormatNumber(sample.MovingEnergy)} static={_FormatNumber(sample.StaticDistanceCm)}cm/{_FormatNumber(sample.StaticEnergy)} distanceCm={_FormatNumber(sample.DistanceCm)} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
+  }
+
+  // Formatuje opcjonalną liczbę do logu.
+  private static string _FormatNumber(int? value)
+  {
+    return value?.ToString() ?? "-";
   }
 
   // Formatuje czas trwania z kropką dziesiętną niezależnie od ustawień Windows.
@@ -1568,24 +1630,22 @@ internal sealed class SensorStateStore
     return value.TotalSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
   }
 
-  internal sealed class SensorSubscription : IDisposable
+  internal sealed class SensorSubscription<T> : IDisposable
   {
-    private readonly Guid _id;
-    private readonly SensorStateStore _owner;
+    private readonly Action _unsubscribe;
 
-    public SensorSubscription(Guid id, ChannelReader<SensorSnapshot> reader, SensorStateStore owner)
+    public SensorSubscription(ChannelReader<T> reader, Action unsubscribe)
     {
-      _id = id;
       Reader = reader;
-      _owner = owner;
+      _unsubscribe = unsubscribe;
     }
 
-    public ChannelReader<SensorSnapshot> Reader { get; }
+    public ChannelReader<T> Reader { get; }
 
-    /// <summary>Kończy subskrypcję zmian statusu.</summary>
+    /// <summary>Kończy subskrypcję po zamknięciu połączenia klienta.</summary>
     public void Dispose()
     {
-      _owner._Unsubscribe(_id);
+      _unsubscribe();
     }
   }
 }
@@ -1746,12 +1806,63 @@ internal sealed record SensorDebugState(
   SensorStatus? CandidateStatus,
   DateTimeOffset? CandidateSince);
 
+// TargetDistanceCm to wygładzona odległość osoby, na której opiera się decyzja; Sample zachowuje surowe pola ramki.
 internal sealed record SensorSampleDecision(
-  bool Present,
-  string TargetStatus,
-  int? DistanceCm,
+  SensorSample Sample,
+  int? TargetDistanceCm,
   int MaxDistanceCm,
   SensorStatus Decision);
+
+// Linia strumienia samples: pojedyncza próbka z decyzją przed stabilizacją.
+internal sealed record SensorSampleMessage(
+  [property: JsonPropertyOrder(1)]
+  DateTimeOffset At,
+  [property: JsonPropertyOrder(2)]
+  bool Present,
+  [property: JsonPropertyOrder(3)]
+  string TargetStatus,
+  [property: JsonPropertyOrder(4)]
+  int? TargetDistanceCm,
+  [property: JsonPropertyOrder(5)]
+  int? DistanceCm,
+  [property: JsonPropertyOrder(6)]
+  int? MovingDistanceCm,
+  [property: JsonPropertyOrder(7)]
+  int? MovingEnergy,
+  [property: JsonPropertyOrder(8)]
+  int? StaticDistanceCm,
+  [property: JsonPropertyOrder(9)]
+  int? StaticEnergy,
+  [property: JsonPropertyOrder(10)]
+  int MaxDistanceCm,
+  [property: JsonPropertyOrder(11)]
+  SensorStatus Decision)
+{
+  [JsonPropertyOrder(0)]
+  public string Type => "sample";
+
+  /// <summary>Tworzy linię strumienia z próbki i decyzji hosta; targetStatus w camelCase jak enumy w status.</summary>
+  public static SensorSampleMessage Create(SensorSampleDecision decision, DateTimeOffset at)
+  {
+    var sample = decision.Sample;
+    var targetStatus = sample.TargetStatus.Length > 0
+      ? char.ToLowerInvariant(sample.TargetStatus[0]) + sample.TargetStatus[1..]
+      : sample.TargetStatus;
+
+    return new SensorSampleMessage(
+      at,
+      sample.Present,
+      targetStatus,
+      decision.TargetDistanceCm,
+      sample.DistanceCm,
+      sample.MovingDistanceCm,
+      sample.MovingEnergy,
+      sample.StaticDistanceCm,
+      sample.StaticEnergy,
+      decision.MaxDistanceCm,
+      decision.Decision);
+  }
+}
 
 internal enum SensorStatus
 {
@@ -1771,9 +1882,32 @@ internal enum WindowsSessionStatus
 internal sealed record SensorSample(
   bool Present,
   string TargetStatus,
-  int? DistanceCm)
+  int? DistanceCm,
+  int? MovingDistanceCm = null,
+  int? MovingEnergy = null,
+  int? StaticDistanceCm = null,
+  int? StaticEnergy = null)
 {
-  /// <summary>Parsuje linię JSON z firmware sensora.</summary>
+  /// <summary>Surowa odległość osoby z jednej ramki: najmniejsza z odległości zgłoszonych celów i detection distance, bo osoba siedzi bliżej niż oparcie krzesła czy ściana.</summary>
+  public int? TargetDistanceCm => TargetStatus switch
+  {
+    // Odległość celu nieobecnego w statusie bywa nieaktualna, więc wchodzą tylko cele wskazane przez radar.
+    "MovingTarget" => _Min(MovingDistanceCm, DistanceCm),
+    "StaticTarget" => _Min(StaticDistanceCm, DistanceCm),
+    "BothTargets" => _Min(_Min(MovingDistanceCm, StaticDistanceCm), DistanceCm),
+    _ => null
+  };
+
+  // Zwraca mniejszą z dwóch odległości, pomijając brakujące.
+  private static int? _Min(int? first, int? second)
+  {
+    if (first is null)
+      return second;
+
+    return second is null ? first : Math.Min(first.Value, second.Value);
+  }
+
+  /// <summary>Parsuje linię JSON z firmware sensora; firmware sprzed 0.1.6 nie wysyła pól moving/static.</summary>
   public static SensorSample? Parse(string line)
   {
     using var json = JsonDocument.Parse(line);
@@ -1793,7 +1927,22 @@ internal sealed record SensorSample(
     else if (root.TryGetProperty("distanceMm", out var legacyDistanceProperty) && legacyDistanceProperty.ValueKind == JsonValueKind.Number)
       distanceCm = legacyDistanceProperty.GetInt32();
 
-    return new SensorSample(present, targetStatus, distanceCm);
+    return new SensorSample(
+      present,
+      targetStatus,
+      distanceCm,
+      _ReadOptionalInt(root, "movingDistanceCm"),
+      _ReadOptionalInt(root, "movingEnergy"),
+      _ReadOptionalInt(root, "staticDistanceCm"),
+      _ReadOptionalInt(root, "staticEnergy"));
+  }
+
+  // Czyta opcjonalne pole liczbowe; brak albo null daje null.
+  private static int? _ReadOptionalInt(JsonElement root, string name)
+  {
+    return root.TryGetProperty(name, out var property) && property.ValueKind == JsonValueKind.Number
+      ? property.GetInt32()
+      : null;
   }
 }
 

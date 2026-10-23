@@ -33,14 +33,14 @@ using System.Text;
 
 public static class StandPulseFakeScenarioPipeProbe
 {
-    /// <summary>Czyta kilka linii statusu z komendy watch.</summary>
-    public static string[] Watch(string pipeName, int maxLines, int connectTimeoutMs, int readTimeoutMs)
+    /// <summary>Czyta kilka linii z komendy pipe (watch albo samples); przerywa, gdy kolejna linia nie przyjdzie w readTimeoutMs.</summary>
+    public static string[] Read(string pipeName, string command, int maxLines, int connectTimeoutMs, int readTimeoutMs)
     {
         var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut);
         pipe.Connect(connectTimeoutMs);
 
         var encoding = new UTF8Encoding(false);
-        var request = encoding.GetBytes("{\"command\":\"watch\"}\n");
+        var request = encoding.GetBytes("{\"command\":\"" + command + "\"}\n");
         pipe.Write(request, 0, request.Length);
         pipe.Flush();
 
@@ -154,7 +154,9 @@ function Invoke-FakeScenario {
         [string[]]$ForbiddenStatuses = @(),
         [int]$MaxLines = 4,
         [int]$ReadTimeoutMs = 5000,
-        [switch]$StayInLast
+        [switch]$StayInLast,
+        [string]$Command = "watch",
+        [int]$MinSampleLines = 0
     )
 
     $pipeName = "StandPulse.Sensor.FakeScenario." + [Guid]::NewGuid().ToString("N")
@@ -176,16 +178,25 @@ function Invoke-FakeScenario {
     try {
         Start-Sleep -Milliseconds 300
 
-        $lines = [StandPulseFakeScenarioPipeProbe]::Watch($pipeName, $MaxLines, 5000, $ReadTimeoutMs)
+        $lines = [StandPulseFakeScenarioPipeProbe]::Read($pipeName, $Command, $MaxLines, 5000, $ReadTimeoutMs)
         if ($lines.Count -eq 0) {
             throw "Scenario '$Name' failed. No status lines received."
         }
 
-        $statuses = @(
-            foreach ($line in $lines) {
-                ($line | ConvertFrom-Json).status
+        $messages = @($lines | ForEach-Object { $_ | ConvertFrom-Json })
+        $statuses = @($messages | Where-Object { $_.type -eq "status" } | ForEach-Object { $_.status })
+        $samples = @($messages | Where-Object { $_.type -eq "sample" })
+
+        # Krótki ReadTimeoutMs sprawia, że przerwa między próbkami dłuższa niż limit kończy odczyt i obcina ich liczbę.
+        if ($samples.Count -lt $MinSampleLines) {
+            throw "Scenario '$Name' failed. Expected at least $MinSampleLines sample lines, got $($samples.Count)."
+        }
+
+        foreach ($sample in $samples) {
+            if ($null -eq $sample.decision -or $null -eq $sample.at) {
+                throw "Scenario '$Name' failed. Sample line without decision or at: $($sample | ConvertTo-Json -Compress)"
             }
-        )
+        }
 
         Assert-ContainsStatusSequence -Statuses $statuses -Expected $ExpectedSequence -ScenarioName $Name -StayInLast:$StayInLast
 
@@ -197,7 +208,7 @@ function Invoke-FakeScenario {
 
         [pscustomobject]@{
             Scenario = $Name
-            Statuses = ($statuses -join " -> ")
+            Statuses = ($statuses -join " -> ") + $(if ($samples.Count -gt 0) { " ($($samples.Count) samples)" } else { "" })
             Result = "OK"
         }
     }
@@ -300,6 +311,17 @@ $scenarios = @(
         )
     },
     @{
+        Name = "samples-stream-delivers-each-sample"
+        Command = "samples"
+        ExpectedSequence = @("presence")
+        MinSampleLines = 12
+        MaxLines = 20
+        ReadTimeoutMs = 1000
+        Samples = @(
+            [ordered]@{ event = $null; present = $true; targetStatus = "StaticTarget"; distanceCm = 64; repeat = 30 }
+        )
+    },
+    @{
         Name = "startup-garbage-becomes-error"
         ExpectedSequence = @("error")
         MaxLines = 2
@@ -339,6 +361,16 @@ try {
 
         $stayInLast = $scenario.ContainsKey("StayInLast") -and $scenario["StayInLast"]
 
+        $command = "watch"
+        if ($scenario.ContainsKey("Command")) {
+            $command = $scenario["Command"]
+        }
+
+        $minSampleLines = 0
+        if ($scenario.ContainsKey("MinSampleLines")) {
+            $minSampleLines = $scenario["MinSampleLines"]
+        }
+
         Invoke-FakeScenario `
             -Name $scenario["Name"] `
             -Samples $scenario["Samples"] `
@@ -346,7 +378,9 @@ try {
             -ForbiddenStatuses $forbiddenStatuses `
             -MaxLines $maxLines `
             -ReadTimeoutMs $readTimeoutMs `
-            -StayInLast:$stayInLast
+            -StayInLast:$stayInLast `
+            -Command $command `
+            -MinSampleLines $minSampleLines
     }
 
     $results | Format-Table -AutoSize
