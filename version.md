@@ -1,3 +1,6 @@
+# 0.1.7 2026-10-21 16:38
+- `targetDistanceCm` to najmniejsza odleglosc zgloszonych celow i detection distance, wygladzona mediana z 5 probek / Odczyt osoby przy biurku nie skacze juz do 200-300 cm przez dalekie odbicia
+
 # 0.1.6 2026-10-19 23:41
 - Firmware parsuje ramki radaru samodzielnie i wysyla odleglosci oraz energie celu ruchomego i nieruchomego / Widac, ze dotychczasowe `distanceCm` pokazuje tlo (sciana ~2,7 m), a nie osobe
 - Decyzja obecnosci SensorHost uzywa `targetDistanceCm` wybieranego wedlug statusu celu / Odchylenie na krzesle nie powinno juz dawac odczytu tla ponad progiem

@@ -227,7 +227,7 @@ Host wysyła najpierw aktualny snapshot `status` (taki sam jak w `get`), a potem
 
 1. `at` - czas odczytu próbki przez host (ISO 8601 z offsetem).
 2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget` albo `bothTargets`.
-3. `targetDistanceCm` - odległość celu uznanego za osobę; główna liczba do pokazania. `null`, gdy radar nie widzi celu.
+3. `targetDistanceCm` - odległość osoby: najmniejsza z odległości radaru, wygładzona medianą z ostatnich 5 próbek (około 1 s); główna liczba do pokazania. `null`, gdy radar w tej próbce nie widzi celu.
 4. `decision` - `presence` albo `absence` dla tej jednej próbki, przed stabilizacją `stateChangeDelaySeconds`. Gdy `targetDistanceCm` jest `null`, `decision` jest zawsze `absence`.
 5. `distanceCm`, `movingDistanceCm`, `movingEnergy`, `staticDistanceCm`, `staticEnergy` - surowe pola radaru do diagnostyki; mogą być `null` przy starszym firmware.
 6. `maxDistanceCm` - aktualny próg `presence.maxDistanceCm`.

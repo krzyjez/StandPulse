@@ -192,7 +192,12 @@ Podstawowa reguła obecności:
 presence = rawPresent && targetDistanceCm < maxDistanceCm
 ```
 
-`rawPresent` wynika z firmware i statusu celu radaru. `targetDistanceCm` ogranicza obecność do strefy biurka. Host wybiera ją z ramki radaru według statusu celu: `movingDistanceCm` dla `MovingTarget`, `staticDistanceCm` dla `StaticTarget`, a dla `BothTargets` odległość celu z wyższą energią. Przy `NoTarget` odległości nie ma. Pole `distanceCm` (detection distance) pokazuje zwykle tło, np. ścianę około 2,7 m od sensora w pustym pokoju, dlatego nie służy już do decyzji; zostaje jako zapas, gdy starszy firmware nie wysyła pól moving/static.
+`rawPresent` wynika z firmware i statusu celu radaru. `targetDistanceCm` ogranicza obecność do strefy biurka. Host liczy ją w dwóch krokach:
+
+1. Z jednej ramki bierze najmniejszą odległość spośród celów wskazanych przez status (`movingDistanceCm` dla `MovingTarget`, `staticDistanceCm` dla `StaticTarget`, oba dla `BothTargets`) i `distanceCm` (detection distance). Osoba siedzi bliżej sensora niż oparcie krzesła czy ściana, więc dalekie odbicia nie wypychają jej poza próg. Przy `NoTarget` odległości nie ma.
+2. Wynik wygładza medianą z ostatnich 5 próbek (około 1 s), bo radar ma bramki co 75 cm i pojedyncze odczyty skaczą o kilkadziesiąt centymetrów. Próbka bez celu daje brak odległości od razu.
+
+Pomiar 2026-10-21 przy biurku (100 próbek): odległości celu ruchomego i nieruchomego skakały od 77 do 300 cm, detection distance mieściło się w 75–162 cm, a reguła najmniejszej odległości ani razu nie przekroczyła 162 cm. W pustym pokoju detection distance pokazuje około 272 cm (ściana), ale radar zgłasza wtedy `NoTarget`.
 
 Zmiana statusu jest publikowana dopiero wtedy, gdy kandydat utrzymuje się co najmniej przez `stateChangeDelaySeconds`.
 
@@ -269,7 +274,7 @@ Host wysyła najpierw aktualny snapshot `status` (taki sam jak w `get`), a potem
 
 1. `at` - czas odczytu próbki przez host (ISO 8601 z offsetem).
 2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget` albo `bothTargets`.
-3. `targetDistanceCm` - odległość celu uznanego za osobę; główna liczba do pokazania. `null`, gdy radar nie widzi celu.
+3. `targetDistanceCm` - wygładzona odległość osoby (opis wyżej w „Interpretacja obecności”); główna liczba do pokazania. `null`, gdy radar w tej próbce nie widzi celu.
 4. `decision` - `presence` albo `absence` dla tej jednej próbki, przed stabilizacją `stateChangeDelaySeconds`. Gdy `targetDistanceCm` jest `null`, `decision` jest zawsze `absence`.
 5. `distanceCm`, `movingDistanceCm`, `movingEnergy`, `staticDistanceCm`, `staticEnergy` - surowe pola radaru do diagnostyki; mogą być `null` przy starszym firmware.
 6. `maxDistanceCm` - aktualny próg `presence.maxDistanceCm`.

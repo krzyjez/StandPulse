@@ -216,6 +216,10 @@ internal sealed class SensorHostService
   private readonly SensorStateStore _store;
   private readonly SensorHostLogger _logger;
   private static readonly TimeSpan SensorErrorLogInterval = TimeSpan.FromMinutes(1);
+  // 5 próbek to około 1 s przy 5 próbkach na sekundę z firmware.
+  private const int TargetDistanceWindow = 5;
+
+  private readonly Queue<int?> _recentTargetDistances = new();
 
   private int _consecutiveSensorErrors;
   private DateTimeOffset _lastSensorErrorLogAt;
@@ -396,11 +400,12 @@ internal sealed class SensorHostService
       if (_consecutiveSensorErrors >= _settings.Presence.MaxConsecutiveSensorErrors)
         _WriteOperationalLog($"Sensor wysyła poprawne próbki po {_consecutiveSensorErrors} kolejnych błędach firmware.");
       _consecutiveSensorErrors = 0;
+      var targetDistanceCm = _SmoothTargetDistance(sample.TargetDistanceCm);
       var presentAtDesk = sample.Present &&
-                          sample.TargetDistanceCm.HasValue &&
-                          sample.TargetDistanceCm.Value < _settings.Presence.MaxDistanceCm;
+                          targetDistanceCm.HasValue &&
+                          targetDistanceCm.Value < _settings.Presence.MaxDistanceCm;
       var sampleStatus = presentAtDesk ? SensorStatus.Presence : SensorStatus.Absence;
-      var sampleDecision = new SensorSampleDecision(sample, _settings.Presence.MaxDistanceCm, sampleStatus);
+      var sampleDecision = new SensorSampleDecision(sample, targetDistanceCm, _settings.Presence.MaxDistanceCm, sampleStatus);
 
       _WriteDebug($"SAMPLE {SensorStateStore.FormatSampleDecision(sampleDecision)}");
 
@@ -423,6 +428,20 @@ internal sealed class SensorHostService
         _RecordStartupInvalidLine("json-parse-error");
       }
     }
+  }
+
+  // Mediana z ostatnich próbek tłumi skoki wynikające z bramek radaru (75 cm); brak celu w bieżącej próbce daje null od razu.
+  private int? _SmoothTargetDistance(int? rawDistanceCm)
+  {
+    _recentTargetDistances.Enqueue(rawDistanceCm);
+    if (_recentTargetDistances.Count > TargetDistanceWindow)
+      _recentTargetDistances.Dequeue();
+
+    if (rawDistanceCm is null)
+      return null;
+
+    var values = _recentTargetDistances.OfType<int>().Order().ToList();
+    return values[values.Count / 2];
   }
 
   // Pilnuje, żeby nieskończone śmieci startowe sensora nie zostawiły hosta bez diagnozy.
@@ -1595,7 +1614,7 @@ internal sealed class SensorStateStore
   public static string FormatSampleDecision(SensorSampleDecision sampleDecision)
   {
     var sample = sampleDecision.Sample;
-    return $"present={sample.Present} targetStatus={sample.TargetStatus} targetDistanceCm={_FormatNumber(sample.TargetDistanceCm)} moving={_FormatNumber(sample.MovingDistanceCm)}cm/{_FormatNumber(sample.MovingEnergy)} static={_FormatNumber(sample.StaticDistanceCm)}cm/{_FormatNumber(sample.StaticEnergy)} distanceCm={_FormatNumber(sample.DistanceCm)} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
+    return $"present={sample.Present} targetStatus={sample.TargetStatus} targetDistanceCm={_FormatNumber(sampleDecision.TargetDistanceCm)} raw={_FormatNumber(sample.TargetDistanceCm)} moving={_FormatNumber(sample.MovingDistanceCm)}cm/{_FormatNumber(sample.MovingEnergy)} static={_FormatNumber(sample.StaticDistanceCm)}cm/{_FormatNumber(sample.StaticEnergy)} distanceCm={_FormatNumber(sample.DistanceCm)} maxDistanceCm={sampleDecision.MaxDistanceCm} decision={sampleDecision.Decision}";
   }
 
   // Formatuje opcjonalną liczbę do logu.
@@ -1786,8 +1805,10 @@ internal sealed record SensorDebugState(
   SensorStatus? CandidateStatus,
   DateTimeOffset? CandidateSince);
 
+// TargetDistanceCm to wygładzona odległość osoby, na której opiera się decyzja; Sample zachowuje surowe pola ramki.
 internal sealed record SensorSampleDecision(
   SensorSample Sample,
+  int? TargetDistanceCm,
   int MaxDistanceCm,
   SensorStatus Decision);
 
@@ -1831,7 +1852,7 @@ internal sealed record SensorSampleMessage(
       at,
       sample.Present,
       targetStatus,
-      sample.TargetDistanceCm,
+      decision.TargetDistanceCm,
       sample.DistanceCm,
       sample.MovingDistanceCm,
       sample.MovingEnergy,
@@ -1866,17 +1887,24 @@ internal sealed record SensorSample(
   int? StaticDistanceCm = null,
   int? StaticEnergy = null)
 {
-  /// <summary>Odległość celu uznanego za osobę; distanceCm (detection distance) bywa odległością tła, np. ściany.</summary>
+  /// <summary>Surowa odległość osoby z jednej ramki: najmniejsza z odległości zgłoszonych celów i detection distance, bo osoba siedzi bliżej niż oparcie krzesła czy ściana.</summary>
   public int? TargetDistanceCm => TargetStatus switch
   {
-    "MovingTarget" => MovingDistanceCm ?? DistanceCm,
-    "StaticTarget" => StaticDistanceCm ?? DistanceCm,
-    // Przy dwóch celach liczy się ten z silniejszym odbiciem.
-    "BothTargets" => (MovingEnergy ?? 0) >= (StaticEnergy ?? 0)
-      ? MovingDistanceCm ?? DistanceCm
-      : StaticDistanceCm ?? DistanceCm,
+    // Odległość celu nieobecnego w statusie bywa nieaktualna, więc wchodzą tylko cele wskazane przez radar.
+    "MovingTarget" => _Min(MovingDistanceCm, DistanceCm),
+    "StaticTarget" => _Min(StaticDistanceCm, DistanceCm),
+    "BothTargets" => _Min(_Min(MovingDistanceCm, StaticDistanceCm), DistanceCm),
     _ => null
   };
+
+  // Zwraca mniejszą z dwóch odległości, pomijając brakujące.
+  private static int? _Min(int? first, int? second)
+  {
+    if (first is null)
+      return second;
+
+    return second is null ? first : Math.Min(first.Value, second.Value);
+  }
 
   /// <summary>Parsuje linię JSON z firmware sensora; firmware sprzed 0.1.6 nie wysyła pól moving/static.</summary>
   public static SensorSample? Parse(string line)
