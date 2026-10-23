@@ -64,7 +64,7 @@ Znaczenie pól:
 | Pole | Znaczenie |
 |---|---|
 | `present` | Uproszczony bool: `true` dla `MovingTarget`, `StaticTarget` albo `BothTargets`. |
-| `targetStatus` | Etykieta z radaru: `NoTarget`, `MovingTarget`, `StaticTarget`, `BothTargets` albo `ErrorFrame`. |
+| `targetStatus` | Etykieta z radaru: `NoTarget`, `MovingTarget`, `StaticTarget`, `BothTargets` albo `Unknown` przy nieznanym kodzie stanu. Brak ramek z radaru firmware zgłasza zdarzeniem `radar_read_error`, a nie wartością `targetStatus`. |
 | `distanceCm` | Detection distance z ramki radaru w centymetrach. W pustym pokoju pokazuje około 272 cm, czyli najpewniej ścianę naprzeciw sensora, a nie osobę. Wcześniejsza robocza nazwa `distanceMm` była myląca. |
 | `movingDistanceCm`, `movingEnergy` | Odległość (cm) i energia (0-100) celu ruchomego. Bez celu energia jest bliska zera, a odległość zostaje z poprzedniego odczytu. |
 | `staticDistanceCm`, `staticEnergy` | Odległość (cm) i energia (0-100) celu nieruchomego. |

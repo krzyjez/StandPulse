@@ -1330,12 +1330,12 @@ internal static class WindowsSessionProbe
 internal sealed class SensorStateStore
 {
   private readonly object _syncRoot = new();
-  // Kolejka próbek na klienta samples jest ograniczona, żeby wolny klient nie zapychał pamięci hosta.
+  // Limit próbek w kolejce klienta samples chroni pamięć hosta przed klientem, który przestał czytać.
   private const int StreamQueueCapacity = 256;
 
   private readonly ConcurrentDictionary<Guid, ChannelWriter<SensorSnapshot>> _subscriptions = new();
   // Klienci samples dostają próbki i zmiany statusu w jednej kolejce, w kolejności zdarzeń.
-  private readonly ConcurrentDictionary<Guid, ChannelWriter<object>> _streamSubscriptions = new();
+  private readonly ConcurrentDictionary<Guid, Channel<object>> _streamSubscriptions = new();
   private readonly Action<string>? _writeLog;
 
   private SensorSnapshot _snapshot = new(
@@ -1382,20 +1382,20 @@ internal sealed class SensorStateStore
   /// <summary>Rejestruje subskrypcję strumienia samples: każda próbka oraz każda zmiana stabilnego statusu.</summary>
   public SensorSubscription<object> SubscribeStream()
   {
-    var channel = Channel.CreateBounded<object>(new BoundedChannelOptions(StreamQueueCapacity)
-    {
-      FullMode = BoundedChannelFullMode.DropOldest
-    });
+    var channel = Channel.CreateUnbounded<object>();
     var id = Guid.NewGuid();
-    _streamSubscriptions[id] = channel.Writer;
+    _streamSubscriptions[id] = channel;
     return new SensorSubscription<object>(channel.Reader, () => _streamSubscriptions.TryRemove(id, out _));
   }
 
-  /// <summary>Rozsyła pojedynczą próbkę do klientów samples bez wpływu na stabilny status.</summary>
+  /// <summary>Rozsyła pojedynczą próbkę do klientów samples; przy pełnej kolejce próbka przepada, ale linie status nigdy.</summary>
   public void PublishSample(SensorSampleMessage sample)
   {
-    foreach (var (_, writer) in _streamSubscriptions)
-      writer.TryWrite(sample);
+    foreach (var (_, channel) in _streamSubscriptions)
+    {
+      if (channel.Reader.Count < StreamQueueCapacity)
+        channel.Writer.TryWrite(sample);
+    }
   }
 
   /// <summary>Aktualizuje stabilny stan na podstawie poprawnej próbki sensora.</summary>
@@ -1555,8 +1555,9 @@ internal sealed class SensorStateStore
         _subscriptions.TryRemove(id, out _);
     }
 
-    foreach (var (_, writer) in _streamSubscriptions)
-      writer.TryWrite(snapshot);
+    // Statusy są rzadkie, więc idą bez limitu, żeby klient po wznowieniu nie przegapił np. sensorNotAvailable.
+    foreach (var (_, channel) in _streamSubscriptions)
+      channel.Writer.TryWrite(snapshot);
 
     message ??= _FormatStatusLog(snapshot, sampleDecision);
     if (_writeLog is not null)

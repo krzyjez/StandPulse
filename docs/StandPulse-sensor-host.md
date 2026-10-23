@@ -273,13 +273,13 @@ Host wysyła najpierw aktualny snapshot `status` (taki sam jak w `get`), a potem
 ```
 
 1. `at` - czas odczytu próbki przez host (ISO 8601 z offsetem).
-2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget` albo `bothTargets`.
+2. `targetStatus` - `noTarget`, `movingTarget`, `staticTarget`, `bothTargets` albo `unknown` przy nieznanym kodzie stanu z radaru.
 3. `targetDistanceCm` - wygładzona odległość osoby (opis wyżej w „Interpretacja obecności”); główna liczba do pokazania. `null`, gdy radar w tej próbce nie widzi celu.
 4. `decision` - `presence` albo `absence` dla tej jednej próbki, przed stabilizacją `stateChangeDelaySeconds`. Gdy `targetDistanceCm` jest `null`, `decision` jest zawsze `absence`.
 5. `distanceCm`, `movingDistanceCm`, `movingEnergy`, `staticDistanceCm`, `staticEnergy` - surowe pola radaru do diagnostyki; mogą być `null` przy starszym firmware.
 6. `maxDistanceCm` - aktualny próg `presence.maxDistanceCm`.
 
-Odłączenie sensora albo błąd widać od razu jako linię `status` z `sensorStatus` równym `sensorNotAvailable` albo `error`; próbki wtedy przestają przychodzić. Zerwane połączenie z pipe oznacza, że host nie działa. Kolejka próbek na klienta ma limit 256 linii i przy zapełnieniu odrzuca najstarsze, więc wolny klient nie blokuje hosta.
+Odłączenie sensora albo błąd widać od razu jako linię `status` z `sensorStatus` równym `sensorNotAvailable` albo `error`; próbki wtedy przestają przychodzić. Zerwane połączenie z pipe oznacza, że host nie działa. Kolejka klienta mieści najwyżej 256 próbek; gdy klient przestanie czytać, kolejne próbki przepadają, ale linie `status` zawsze trafiają do kolejki, więc po wznowieniu klient dostanie każdą zmianę statusu.
 
 ## Fake sensor
 
